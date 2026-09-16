@@ -1,0 +1,6 @@
+{
+  "name": "Trip Planner with Google Maps",
+  "description": "Interactive trip planner with pinned map locations, draggable calendar timeline, transit travel times, business hours validation, iCal export, real-time companion sharing, and offline mode.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "Trip Planner with Google Maps",
+  "short_name": "TripPlanner",
+  "description": "Interactive trip planner with pinned map locations, draggable calendar timeline, transit travel times, business hours validation, iCal export, and real-time companion sharing.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#2563eb",
+  "background_color": "#f8fafc",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
