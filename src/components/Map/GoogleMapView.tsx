@@ -1,582 +1,1003 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
-import { Activity, TransportationMode, TravelLeg } from '../../types';
-import { calculateDistanceKm, formatTime12h, timeStringToMinutes } from '../../utils/geo';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { 
+  Activity, 
+  TransportationMode, 
+  TravelLeg, 
+  TripDay, 
+  GoogleMapsList, 
+  SelectedTransitRoute 
+} from '../../types';
+import { 
+  formatTime12h, 
+  timeStringToMinutes,
+  buildGoogleMapsDirectionsUrl,
+  buildGoogleMapsEmbedDirectionsUrl,
+  buildGoogleMapsEmbedPlaceUrl,
+  buildGoogleMapsEmbedSearchUrl,
+  buildGoogleMapsLegDirectionsWebUrl,
+  buildGoogleMapsEmbedLegDirectionsUrl,
+  buildGoogleMapsEmbedAreaOverviewUrl
+} from '../../utils/geo';
 import { 
   MapPin, 
   Navigation, 
   Compass, 
-  Car, 
-  Train, 
-  Footprints, 
-  Bike, 
-  Clock, 
-  AlertTriangle,
-  ZoomIn, 
-  ZoomOut, 
-  Maximize2, 
   Layers, 
   Sparkles, 
   WifiOff,
   Bus,
-  Search,
+  Car,
+  Footprints,
+  Bike,
   ExternalLink,
   Star,
   CheckCircle2,
-  Crosshair,
   Route,
-  ArrowRight
+  ArrowRight,
+  RotateCcw,
+  ListFilter,
+  BookmarkPlus,
+  Share2,
+  Plus,
+  ArrowLeftRight,
+  Clock,
+  Eye,
+  Maximize2,
+  AlertCircle,
+  ChevronRight
 } from 'lucide-react';
 
 interface GoogleMapViewProps {
   apiKey: string;
-  activities: Activity[];
+  activities: Activity[]; // Active day's scheduled activities
+  allTripDays?: TripDay[];
+  activeDayId?: string;
+  activeListId?: string;
+  shelfActivities?: Activity[];
+  onSelectDay?: (dayId: string) => void;
   selectedActivityId: string | null;
   onSelectActivity: (id: string) => void;
+  selectedTransitRoute?: SelectedTransitRoute | null;
+  onSelectTransitRoute?: (fromActivity: Activity, toActivity: Activity, leg: TravelLeg) => void;
+  onClearTransitRoute?: () => void;
+  onUpdateTransitMode?: (mode: TransportationMode) => void;
   isOffline: boolean;
   destinationName: string;
   center: { lat: number; lng: number };
   onOpenApiKeyModal: () => void;
   onOpenTransitModal?: (fromActivity: Activity, toActivity: Activity, leg: TravelLeg) => void;
+  onMoveActivityToList?: (activityId: string, fromListId: string, toListId: string) => void;
+  onOpenAddModal?: (targetListId?: string) => void;
 }
 
 export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
   apiKey,
   activities,
+  allTripDays = [],
+  activeDayId,
+  activeListId,
+  shelfActivities = [],
+  onSelectDay,
   selectedActivityId,
   onSelectActivity,
+  selectedTransitRoute,
+  onSelectTransitRoute,
+  onClearTransitRoute,
+  onUpdateTransitMode,
   isOffline,
   destinationName,
   center,
   onOpenApiKeyModal,
   onOpenTransitModal,
+  onMoveActivityToList,
+  onOpenAddModal,
 }) => {
-  const [zoomLevel, setZoomLevel] = useState(13);
-  const [activeCenter, setActiveCenter] = useState(center);
-  const [hoveredPinId, setHoveredPinId] = useState<string | null>(null);
-  const [mapType, setMapType] = useState<'roadmap' | 'satellite'>('roadmap');
-  const [showTransitOverlay, setShowTransitOverlay] = useState(true);
-  const [mapSearchQuery, setMapSearchQuery] = useState('');
+  // Selected Google Maps List filter: 'activeDay' | 'shelf' | specific dayId | 'all'
+  const [selectedListId, setSelectedListId] = useState<string>(activeListId || activeDayId || 'day-1');
+  // Embed Mode: 'overview' (all places for day) | 'directions' (route) | 'place' (selected stop) | 'search' (area search)
+  const [embedMode, setEmbedMode] = useState<'overview' | 'directions' | 'place' | 'search'>('overview');
+  // View mode: Google Maps Embed vs Interactive Vector Map
+  const [mapEngine, setMapEngine] = useState<'embed' | 'vector'>('embed');
+  // Embed provider: 'universal' (no Google Cloud API activation required) vs 'cloud' (Google Cloud Embed v1)
+  const [embedType, setEmbedType] = useState<'universal' | 'cloud'>(() => {
+    return (localStorage.getItem('trip_planner_embed_type') as 'universal' | 'cloud') || 'universal';
+  });
+  const [showListDrawer, setShowListDrawer] = useState(true);
 
-  // Sort activities chronologically to match travel sequence
-  const sortedActivities = useMemo(() => {
-    return [...activities].sort(
-      (a, b) => timeStringToMinutes(a.startTime || '09:00') - timeStringToMinutes(b.startTime || '09:00')
-    );
-  }, [activities]);
-
-  // Sync center when destination or center prop changes
-  useEffect(() => {
-    setActiveCenter(center);
-  }, [center]);
-
-  // Auto center when selected activity changes
-  useEffect(() => {
-    if (selectedActivityId) {
-      const act = sortedActivities.find((a) => a.id === selectedActivityId);
-      if (act && act.location.lat && act.location.lng) {
-        setActiveCenter({ lat: act.location.lat, lng: act.location.lng });
-      }
-    } else if (sortedActivities.length > 0) {
-      setActiveCenter({ lat: sortedActivities[0].location.lat, lng: sortedActivities[0].location.lng });
-    }
-  }, [selectedActivityId, sortedActivities]);
-
-  const handleFitAllPins = () => {
-    if (sortedActivities.length === 0) {
-      setActiveCenter(center);
-      setZoomLevel(13);
-      return;
-    }
-    const avgLat = sortedActivities.reduce((acc, a) => acc + a.location.lat, 0) / sortedActivities.length;
-    const avgLng = sortedActivities.reduce((acc, a) => acc + a.location.lng, 0) / sortedActivities.length;
-    setActiveCenter({ lat: avgLat, lng: avgLng });
-    setZoomLevel(13);
+  const handleSetEmbedType = (type: 'universal' | 'cloud') => {
+    setEmbedType(type);
+    localStorage.setItem('trip_planner_embed_type', type);
   };
 
-  const getCategoryColor = (category: string) => {
-    switch (category) {
-      case 'culture': return '#ef4444';
-      case 'dining': return '#f97316';
-      case 'entertainment': return '#8b5cf6';
-      case 'shopping': return '#06b6d4';
-      case 'relaxation': return '#10b981';
-      default: return '#3b82f6';
+  // Sync selectedListId when activeListId or activeDayId changes
+  useEffect(() => {
+    if (activeListId) {
+      setSelectedListId(activeListId);
+    } else if (activeDayId && selectedListId !== 'shelf' && selectedListId !== 'all') {
+      setSelectedListId(activeDayId);
+    }
+  }, [activeListId, activeDayId]);
+
+  // When selectedTransitRoute changes, automatically switch to directions mode
+  useEffect(() => {
+    if (selectedTransitRoute) {
+      setEmbedMode('directions');
+    }
+  }, [selectedTransitRoute]);
+
+  // Construct structured Google Maps Lists for all trip days + the shelf
+  const googleMapsLists = useMemo<GoogleMapsList[]>(() => {
+    const lists: GoogleMapsList[] = [];
+
+    // 1. Add each day as a Google Maps List
+    allTripDays.forEach((day) => {
+      const sortedDayActs = [...day.activities].sort(
+        (a, b) => timeStringToMinutes(a.startTime || '09:00') - timeStringToMinutes(b.startTime || '09:00')
+      );
+      lists.push({
+        id: day.id,
+        title: day.title || `Day ${day.dayNumber} List`,
+        type: 'day',
+        dayId: day.id,
+        dayNumber: day.dayNumber,
+        activityCount: day.activities.length,
+        activities: sortedDayActs,
+        googleMapsUrl: buildGoogleMapsDirectionsUrl(sortedDayActs),
+      });
+    });
+
+    // 2. Add Activity Shelf as an unscheduled Google Maps List
+    lists.push({
+      id: 'shelf',
+      title: 'Activity Shelf List',
+      type: 'shelf',
+      activityCount: shelfActivities.length,
+      activities: shelfActivities,
+      googleMapsUrl: buildGoogleMapsDirectionsUrl(shelfActivities),
+    });
+
+    return lists;
+  }, [allTripDays, shelfActivities]);
+
+  // Find currently selected list object
+  const currentList = useMemo(() => {
+    if (selectedListId === 'all') {
+      const allActs: Activity[] = [];
+      allTripDays.forEach((d) => allActs.push(...d.activities));
+      allActs.push(...shelfActivities);
+      return {
+        id: 'all',
+        title: 'All Trip Lists (Combined)',
+        type: 'day' as const,
+        activityCount: allActs.length,
+        activities: allActs,
+        googleMapsUrl: buildGoogleMapsDirectionsUrl(allActs),
+      };
+    }
+    return googleMapsLists.find((l) => l.id === selectedListId) || googleMapsLists[0];
+  }, [selectedListId, googleMapsLists, allTripDays, shelfActivities]);
+
+  // Selected Activity lookup
+  const selectedAct = useMemo(() => {
+    if (!selectedActivityId) return null;
+    for (const l of googleMapsLists) {
+      const found = l.activities.find((a) => a.id === selectedActivityId);
+      if (found) return found;
+    }
+    return null;
+  }, [selectedActivityId, googleMapsLists]);
+
+  // Calculate Embed URL based on selectedTransitRoute, active Google Maps List, and Embed Mode
+  const embedUrl = useMemo(() => {
+    const useCloud = embedType === 'cloud';
+
+    // 1. If a specific transit route is selected, adjust map directly to route & directions for that leg
+    if (selectedTransitRoute) {
+      return buildGoogleMapsEmbedLegDirectionsUrl(
+        selectedTransitRoute.fromActivity,
+        selectedTransitRoute.toActivity,
+        selectedTransitRoute.leg.mode,
+        apiKey,
+        useCloud
+      );
+    }
+
+    // 2. If user explicitly selected a place or embedMode is 'place'
+    if (embedMode === 'place' && selectedAct) {
+      return buildGoogleMapsEmbedPlaceUrl(
+        selectedAct.location.name,
+        selectedAct.location.address,
+        apiKey,
+        useCloud
+      );
+    }
+
+    // 3. Area Overview mode: shows all places listed for that day/shelf!
+    if ((embedMode === 'overview' || embedMode === 'search') && currentList && currentList.activities.length > 0) {
+      return buildGoogleMapsEmbedAreaOverviewUrl(
+        currentList.activities,
+        destinationName,
+        apiKey,
+        useCloud
+      );
+    }
+
+    // 4. Directions mode for full day list
+    if (embedMode === 'directions' && currentList && currentList.activities.length > 0) {
+      return buildGoogleMapsEmbedDirectionsUrl(currentList.activities, apiKey, 'transit', useCloud);
+    }
+
+    // 5. Fallback search mode on destination
+    return buildGoogleMapsEmbedSearchUrl(destinationName || 'Tokyo, Japan', apiKey, useCloud);
+  }, [selectedTransitRoute, embedMode, selectedAct, currentList, apiKey, destinationName, embedType]);
+
+  // Direct Google Maps Web URL to open the selected transit route, list, or place
+  const nativeGoogleMapsUrl = useMemo(() => {
+    if (selectedTransitRoute) {
+      return buildGoogleMapsLegDirectionsWebUrl(
+        selectedTransitRoute.fromActivity,
+        selectedTransitRoute.toActivity,
+        selectedTransitRoute.leg.mode
+      );
+    }
+    if (selectedAct && embedMode === 'place') {
+      return (
+        selectedAct.location.googleMapsUrl ||
+        `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+          `${selectedAct.location.name} ${selectedAct.location.address}`
+        )}`
+      );
+    }
+    return currentList?.googleMapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destinationName)}`;
+  }, [selectedTransitRoute, selectedAct, embedMode, currentList, destinationName]);
+
+  const handleSelectList = (listId: string) => {
+    setSelectedListId(listId);
+    if (onSelectDay) {
+      onSelectDay(listId);
+    }
+    if (onClearTransitRoute) {
+      onClearTransitRoute();
+    }
+    setEmbedMode('overview');
+    const targetList = googleMapsLists.find((l) => l.id === listId);
+    if (targetList && targetList.activities.length > 0) {
+      onSelectActivity(targetList.activities[0].id);
     }
   };
-
-  const selectedAct = sortedActivities.find((a) => a.id === selectedActivityId);
-  const hasRealKey = Boolean(apiKey && apiKey.trim().length > 5);
 
   return (
-    <div className="relative w-full h-full flex flex-col bg-[#e5e3df] dark:bg-[#12161f] overflow-hidden select-none">
-      {/* 1. Google Maps Styled Top Floating Search & Destination Bar */}
-      <div className="absolute top-3 left-3 right-3 z-20 flex items-center justify-between pointer-events-none gap-2">
-        {/* Left: Google Maps Search Card */}
-        <div className="pointer-events-auto flex items-center gap-2 bg-white/95 dark:bg-slate-800/95 backdrop-blur-md shadow-lg rounded-2xl p-1.5 border border-slate-200 dark:border-slate-700 max-w-sm w-full">
-          <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-            <Compass className="w-4 h-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
-                {destinationName}
-              </span>
-              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 shrink-0">
-                {sortedActivities.length} Stops
-              </span>
+    <div className="relative w-full h-full flex flex-col bg-[#f0f2f5] dark:bg-[#0f172a] overflow-hidden select-none">
+      {/* 1. Google Maps Native Lists Top Filter Bar */}
+      <div className="shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 p-2.5 sm:px-4 z-20 flex flex-col gap-2 shadow-xs">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Compass className="w-4.5 h-4.5" />
             </div>
-            <p className="text-[10px] text-slate-400 truncate">
-              Google Maps Transit Path Active
-            </p>
-          </div>
-        </div>
-
-        {/* Right: Map Style Toggles & Key Status */}
-        <div className="pointer-events-auto flex items-center gap-2">
-          {/* Map/Satellite View Switcher */}
-          <div className="flex items-center bg-white/95 dark:bg-slate-800/95 backdrop-blur-md p-1 rounded-2xl shadow-lg border border-slate-200 dark:border-slate-700">
-            <button
-              onClick={() => setMapType('roadmap')}
-              className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer ${
-                mapType === 'roadmap'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
-              }`}
-            >
-              Map
-            </button>
-            <button
-              onClick={() => setMapType('satellite')}
-              className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer ${
-                mapType === 'satellite'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
-              }`}
-            >
-              Satellite
-            </button>
-            <button
-              onClick={() => setShowTransitOverlay((prev) => !prev)}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer ml-1 ${
-                showTransitOverlay
-                  ? 'bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300'
-                  : 'text-slate-400 hover:text-slate-600'
-              }`}
-              title="Toggle Transit Overlay"
-            >
-              <Bus className="w-3 h-3" />
-              <span>Transit</span>
-            </button>
-          </div>
-
-          {/* Key / Offline Pill */}
-          {isOffline ? (
-            <div className="flex items-center gap-1.5 bg-amber-500 text-white text-xs px-3 py-1.5 rounded-2xl shadow-lg font-bold">
-              <WifiOff className="w-3.5 h-3.5" />
-              <span>Offline Map</span>
-            </div>
-          ) : !hasRealKey ? (
-            <button
-              onClick={onOpenApiKeyModal}
-              className="flex items-center gap-1.5 bg-white/95 dark:bg-slate-800/95 hover:bg-blue-50 dark:hover:bg-slate-700 backdrop-blur-md text-blue-600 dark:text-blue-400 text-xs px-3 py-1.5 rounded-2xl shadow-lg border border-blue-200 dark:border-blue-800 transition font-bold cursor-pointer"
-              title="Set Google Maps API Key or use Maps Demo Key"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-              <span>Google Maps Key</span>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1.5 bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-2xl shadow-lg font-bold">
-              <span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse" />
-              <span>Google Maps Live</span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2. Main Map Canvas: Either Official Google Maps or Native Vector Street-Transit Map */}
-      <div className="relative flex-1 w-full h-full">
-        {hasRealKey && !isOffline ? (
-          <APIProvider apiKey={apiKey}>
-            <Map
-              center={activeCenter}
-              zoom={zoomLevel}
-              mapId="DEMO_MAP_ID"
-              mapTypeId={mapType}
-              internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-              style={{ width: '100%', height: '100%' }}
-              disableDefaultUI={false}
-              gestureHandling={'greedy'}
-            >
-              {sortedActivities.map((act, index) => {
-                const isSelected = act.id === selectedActivityId;
-                const pinColor = getCategoryColor(act.category);
-
-                return (
-                  <AdvancedMarker
-                    key={act.id}
-                    position={{ lat: act.location.lat, lng: act.location.lng }}
-                    onClick={() => onSelectActivity(act.id)}
-                    title={`${index + 1}. ${act.title}`}
-                  >
-                    <Pin
-                      background={isSelected ? '#2563eb' : pinColor}
-                      borderColor="#ffffff"
-                      glyphColor="#ffffff"
-                      scale={isSelected ? 1.25 : 1.05}
-                    >
-                      <span className="text-white font-black text-[10px]">
-                        {index + 1}
-                      </span>
-                    </Pin>
-                  </AdvancedMarker>
-                );
-              })}
-            </Map>
-          </APIProvider>
-        ) : (
-          /* High-Fidelity Google Maps Vector Mirror with Actual Multi-Point Transit Paths */
-          <GoogleMapsVectorRenderer
-            activities={sortedActivities}
-            selectedActivityId={selectedActivityId}
-            onSelectActivity={onSelectActivity}
-            center={activeCenter}
-            zoomLevel={zoomLevel}
-            onZoomIn={() => setZoomLevel((z) => Math.min(18, z + 1))}
-            onZoomOut={() => setZoomLevel((z) => Math.max(9, z - 1))}
-            onFitAll={handleFitAllPins}
-            hoveredPinId={hoveredPinId}
-            setHoveredPinId={setHoveredPinId}
-            showTransit={showTransitOverlay}
-            mapType={mapType}
-            onOpenTransitModal={onOpenTransitModal}
-          />
-        )}
-      </div>
-
-      {/* 3. Google Maps Floating Place Card When a Pin is Selected */}
-      {selectedAct && (
-        <div className="absolute bottom-4 left-4 z-30 max-w-sm w-full bg-white/95 dark:bg-slate-800/95 backdrop-blur-md rounded-2xl p-4 shadow-2xl border border-slate-200 dark:border-slate-700 animate-in fade-in slide-in-from-bottom-3">
-          <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
-                  Stop #{sortedActivities.findIndex((a) => a.id === selectedAct.id) + 1}
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-xs text-slate-900 dark:text-white truncate">
+                  {destinationName}
                 </span>
-                <span className="text-[10px] font-semibold text-slate-400 capitalize">
-                  {selectedAct.category}
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                  • Google Maps Lists Mode
                 </span>
               </div>
-              <h4 className="text-sm font-bold text-slate-900 dark:text-white mt-1 leading-snug truncate">
-                {selectedAct.location.name}
-              </h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate flex items-center gap-1">
-                <MapPin className="w-3 h-3 text-red-500 shrink-0" />
-                <span className="truncate">{selectedAct.location.address}</span>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                Viewing: <strong className="text-blue-600 dark:text-blue-400">{currentList?.title}</strong> ({currentList?.activityCount || 0} places)
               </p>
             </div>
-
-            {selectedAct.location.rating && (
-              <div className="flex items-center gap-1 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 px-2 py-1 rounded-xl text-xs font-bold shrink-0 border border-amber-200/60 dark:border-amber-800/60">
-                <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
-                <span>{selectedAct.location.rating}</span>
-              </div>
-            )}
           </div>
 
-          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700/60 flex items-center justify-between text-xs">
-            <div className="flex items-center gap-1 text-slate-600 dark:text-slate-300">
-              <Clock className="w-3.5 h-3.5 text-slate-400" />
-              <span>{formatTime12h(selectedAct.startTime || '09:00')} ({selectedAct.durationMinutes}m)</span>
+          {/* Right Tools: Embed / Vector Switcher & Open in Google Maps */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Toggle Engine */}
+            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700">
+              <button
+                onClick={() => setMapEngine('embed')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  mapEngine === 'embed'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+                title="Use Google Maps Embed API"
+              >
+                <Route className="w-3 h-3" />
+                <span>Google Maps Embed</span>
+              </button>
+              <button
+                onClick={() => setMapEngine('vector')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                  mapEngine === 'vector'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+                title="Switch to Vector Map Pins"
+              >
+                <Layers className="w-3 h-3" />
+                <span>Vector Pins</span>
+              </button>
             </div>
 
-            <div className="flex items-center gap-2">
-              <a
-                href={selectedAct.location.googleMapsUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedAct.location.name + ' ' + selectedAct.location.address)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-blue-600 dark:text-blue-400 font-bold flex items-center gap-1 hover:underline"
+            {/* Universal vs Cloud Key Switcher (when in Embed mode) */}
+            {mapEngine === 'embed' && (
+              <div className="hidden sm:flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200 dark:border-slate-700">
+                <button
+                  onClick={() => handleSetEmbedType('universal')}
+                  className={`px-2 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    embedType === 'universal'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                  title="Universal Embed: Always active without requiring API activation in Google Cloud Console"
+                >
+                  Universal
+                </button>
+                <button
+                  onClick={() => handleSetEmbedType('cloud')}
+                  className={`px-2 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    embedType === 'cloud'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                  }`}
+                  title="Google Cloud Key Embed: Requires Maps Embed API enabled in your Cloud project"
+                >
+                  Cloud Key
+                </button>
+              </div>
+            )}
+
+            {/* Direct Open in Google Maps */}
+            <a
+              href={nativeGoogleMapsUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/60 shadow-xs transition"
+              title={selectedTransitRoute ? "Open turn-by-turn directions in Google Maps" : "Open selected list in Google Maps to save to your personal lists"}
+            >
+              <span>{selectedTransitRoute ? 'Open in Google Maps' : 'Save / Open in Maps'}</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+        </div>
+
+        {/* Google Maps Lists Selection Pills: Each day and Activity Shelf on its own list */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-thin">
+          <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 shrink-0 pr-1">
+            <ListFilter className="w-3 h-3" />
+            <span>Select List:</span>
+          </div>
+
+          {googleMapsLists.map((list) => {
+            const isSelected = selectedListId === list.id;
+            return (
+              <button
+                key={list.id}
+                onClick={() => handleSelectList(list.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition cursor-pointer border ${
+                  isSelected
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs ring-2 ring-blue-500/20'
+                    : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'
+                }`}
               >
-                <span>Google Maps</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
+                {list.type === 'shelf' ? (
+                  <Layers className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
+                ) : (
+                  <MapPin className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-blue-600 dark:text-blue-400'}`} />
+                )}
+                <span>{list.title}</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    isSelected
+                      ? 'bg-blue-700/80 text-white'
+                      : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {list.activityCount}
+                </span>
+              </button>
+            );
+          })}
+
+          <button
+            onClick={() => handleSelectList('all')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 transition cursor-pointer border ${
+              selectedListId === 'all'
+                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-slate-900 shadow-xs'
+                : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:border-slate-300'
+            }`}
+          >
+            <span>All Lists</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Cloud API Activation Helper Banner */}
+      {mapEngine === 'embed' && embedType === 'cloud' && (
+        <div className="bg-amber-50 dark:bg-amber-950/80 border-b border-amber-200 dark:border-amber-850 px-3 sm:px-4 py-2 text-xs flex items-center justify-between gap-3 text-amber-900 dark:text-amber-200 z-10 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="truncate">
+              Seeing &ldquo;API is not activated on your API project&rdquo;? Your key needs <strong>Maps Embed API</strong> enabled in Google Cloud.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => handleSetEmbedType('universal')}
+              className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-bold shadow-xs cursor-pointer transition"
+            >
+              Switch to Universal Embed (Active Instantly)
+            </button>
+            <a
+              href="https://console.cloud.google.com/apis/library?filter=category:maps"
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11px] underline font-semibold text-amber-800 dark:text-amber-300 hover:text-amber-950"
+            >
+              Cloud Console
+            </a>
           </div>
         </div>
       )}
+
+      {/* 2. Mode Headers: Active Transit Route Banner OR Area Overview Strip */}
+      {selectedTransitRoute ? (
+        /* Active Transit Route Banner with Real-Time Directions & Mode Switcher */
+        <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-md z-15 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0">
+              {selectedTransitRoute.leg.mode === 'TRANSIT' && <Bus className="w-4 h-4" />}
+              {selectedTransitRoute.leg.mode === 'DRIVE' && <Car className="w-4 h-4" />}
+              {selectedTransitRoute.leg.mode === 'WALK' && <Footprints className="w-4 h-4" />}
+              {selectedTransitRoute.leg.mode === 'BICYCLE' && <Bike className="w-4 h-4" />}
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 text-xs font-black">
+                <span className="truncate max-w-[130px] sm:max-w-[180px]">{selectedTransitRoute.fromActivity.location.name}</span>
+                <ArrowRight className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                <span className="truncate max-w-[130px] sm:max-w-[180px]">{selectedTransitRoute.toActivity.location.name}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-blue-100 font-medium">
+                <span>{selectedTransitRoute.leg.durationMinutes} mins ({selectedTransitRoute.leg.distanceText})</span>
+                {selectedTransitRoute.leg.transitDetails?.lineName && (
+                  <span className="bg-white/20 px-1.5 py-0.2 rounded-md font-bold text-[10px]">
+                    {selectedTransitRoute.leg.transitDetails.lineName}
+                  </span>
+                )}
+                {selectedTransitRoute.leg.transitDetails?.numStops !== undefined && (
+                  <span className="text-[10px] opacity-80 hidden sm:inline">
+                    • {selectedTransitRoute.leg.transitDetails.numStops} stops
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Mode quick toggles + actions */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            {onUpdateTransitMode && (
+              <div className="flex items-center bg-black/25 p-0.5 rounded-xl border border-white/10">
+                {(['TRANSIT', 'DRIVE', 'WALK', 'BICYCLE'] as TransportationMode[]).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => onUpdateTransitMode(m)}
+                    className={`px-2 py-1 rounded-lg text-[10px] font-bold transition cursor-pointer ${
+                      selectedTransitRoute.leg.mode === m
+                        ? 'bg-white text-blue-900 shadow-xs'
+                        : 'text-white/80 hover:text-white'
+                    }`}
+                  >
+                    {m === 'TRANSIT' && 'Transit'}
+                    {m === 'DRIVE' && 'Drive'}
+                    {m === 'WALK' && 'Walk'}
+                    {m === 'BICYCLE' && 'Bike'}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {onOpenTransitModal && (
+              <button
+                onClick={() => onOpenTransitModal(selectedTransitRoute.fromActivity, selectedTransitRoute.toActivity, selectedTransitRoute.leg)}
+                className="px-2.5 py-1 bg-white/15 hover:bg-white/25 rounded-xl text-xs font-bold transition cursor-pointer"
+                title="View Turn-by-Turn Steps"
+              >
+                Steps
+              </button>
+            )}
+
+            {onClearTransitRoute && (
+              <button
+                onClick={onClearTransitRoute}
+                className="flex items-center gap-1 px-2.5 py-1 bg-white text-blue-900 hover:bg-blue-50 rounded-xl text-xs font-bold shadow-xs cursor-pointer transition"
+                title="Return to Area Overview showing all places for this day"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Area Overview</span>
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Area Overview Strip: Shows all places listed for that day with quick clickable chips */
+        <div className="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 py-2 flex flex-col gap-1.5 z-15 shrink-0">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-xs font-black text-slate-800 dark:text-white flex items-center gap-1.5 shrink-0">
+                <Compass className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                {currentList?.title} Area Overview
+              </span>
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 shrink-0">
+                • {currentList?.activities.length || 0} places listed
+              </span>
+            </div>
+            <span className="text-[10px] font-semibold text-slate-400 hidden sm:inline">
+              Click place to inspect • Click transit route to adjust map
+            </span>
+          </div>
+
+          {/* Quick chips of all places in order with inline transit route buttons */}
+          {currentList && currentList.activities.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin text-xs">
+              {currentList.activities.map((act, idx) => {
+                const nextAct = currentList.activities[idx + 1];
+                const isSelected = act.id === selectedActivityId;
+                return (
+                  <React.Fragment key={act.id}>
+                    <button
+                      onClick={() => {
+                        onSelectActivity(act.id);
+                        setEmbedMode('place');
+                      }}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold shrink-0 transition cursor-pointer border ${
+                        isSelected
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+                      }`}
+                      title={`${act.title} (${act.location.name})`}
+                    >
+                      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-black ${
+                        isSelected ? 'bg-white text-blue-600' : 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+                      }`}>
+                        {currentList.type === 'shelf' ? `S${idx + 1}` : idx + 1}
+                      </span>
+                      <span className="truncate max-w-[130px]">{act.title}</span>
+                    </button>
+
+                    {/* Inline Transit Route Button to Next Stop */}
+                    {nextAct && act.travelToNext && (
+                      <button
+                        onClick={() => {
+                          if (onSelectTransitRoute) {
+                            onSelectTransitRoute(act, nextAct, act.travelToNext!);
+                          }
+                        }}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/50 dark:hover:bg-purple-900/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/60 text-[10px] font-bold shrink-0 transition cursor-pointer group"
+                        title={`Adjust map to route: ${act.title} ➔ ${nextAct.title}`}
+                      >
+                        {act.travelToNext.mode === 'TRANSIT' && <Bus className="w-2.5 h-2.5" />}
+                        {act.travelToNext.mode === 'DRIVE' && <Car className="w-2.5 h-2.5" />}
+                        {act.travelToNext.mode === 'WALK' && <Footprints className="w-2.5 h-2.5" />}
+                        {act.travelToNext.mode === 'BICYCLE' && <Bike className="w-2.5 h-2.5" />}
+                        <span>{act.travelToNext.durationMinutes}m</span>
+                        <ArrowRight className="w-2.5 h-2.5 group-hover:translate-x-0.5 transition-transform" />
+                      </button>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3. Map Canvas Area (Google Maps Embed API or Vector Pins) */}
+      <div className="relative flex-1 w-full h-full overflow-hidden bg-slate-100 dark:bg-slate-950">
+        {mapEngine === 'embed' ? (
+          /* Official Google Maps Embed API iframe */
+          <div className="relative w-full h-full">
+            <iframe
+              title="Google Maps Embed View"
+              src={embedUrl}
+              className="w-full h-full border-0"
+              allowFullScreen
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
+
+            {/* Embed Mode Overlay Pill */}
+            <div className="absolute top-3 left-3 z-10 flex items-center gap-1 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md p-1 rounded-xl shadow-md border border-slate-200 dark:border-slate-700 text-xs font-bold">
+              <button
+                onClick={() => {
+                  if (onClearTransitRoute) onClearTransitRoute();
+                  setEmbedMode('overview');
+                }}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  embedMode === 'overview' && !selectedTransitRoute
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+                title="Show all places listed for this day"
+              >
+                Area Overview
+              </button>
+              <button
+                onClick={() => setEmbedMode('directions')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  embedMode === 'directions' || selectedTransitRoute
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+                title="Show Route & Directions connecting places"
+              >
+                Route & Directions
+              </button>
+              <button
+                onClick={() => setEmbedMode('place')}
+                className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                  embedMode === 'place'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+                }`}
+                title="Focus on Selected Place Details"
+              >
+                Place Details
+              </button>
+            </div>
+          </div>
+        ) : (
+          /* Fast Vector Pins Renderer for Offline/Canvas manipulation */
+          <GoogleMapsVectorRenderer
+            currentList={currentList}
+            allLists={googleMapsLists}
+            selectedActivityId={selectedActivityId}
+            onSelectActivity={(id) => {
+              onSelectActivity(id);
+              setEmbedMode('place');
+            }}
+            selectedTransitRoute={selectedTransitRoute}
+            onSelectDay={onSelectDay}
+            center={center}
+            onOpenTransitModal={onOpenTransitModal}
+          />
+        )}
+
+        {/* 4. Interactive Floating List Drawer Showing Places in Currently Selected List */}
+        {showListDrawer && currentList && currentList.activities.length > 0 && (
+          <div className="absolute bottom-3 left-3 right-3 sm:right-auto sm:max-w-md z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-2xl p-3 shadow-xl border border-slate-200 dark:border-slate-800 max-h-60 overflow-hidden flex flex-col animate-in fade-in slide-in-from-bottom-2">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800 shrink-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-slate-800 dark:text-white">
+                  {currentList.title} Places ({currentList.activities.length})
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {onOpenAddModal && (
+                  <button
+                    onClick={() => onOpenAddModal(currentList.id)}
+                    className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Add to this list</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowListDrawer(false)}
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 cursor-pointer"
+                  title="Minimize list drawer"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Places List with Route Trigger & Drop to List Actions */}
+            <div className="overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/80 pr-1 scrollbar-thin mt-1">
+              {currentList.activities.map((act, idx) => {
+                const nextAct = currentList.activities[idx + 1];
+                const isSelected = act.id === selectedActivityId;
+                return (
+                  <div
+                    key={act.id}
+                    className={`py-2 px-1.5 flex items-center justify-between gap-2 rounded-xl transition ${
+                      isSelected ? 'bg-blue-50 dark:bg-blue-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <div
+                      className="flex items-center gap-2 min-w-0 cursor-pointer flex-1"
+                      onClick={() => {
+                        onSelectActivity(act.id);
+                        setEmbedMode('place');
+                      }}
+                    >
+                      <span className="w-5 h-5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-[10px] font-black flex items-center justify-center shrink-0">
+                        {currentList.type === 'shelf' ? `S${idx + 1}` : idx + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">
+                          {act.title}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate flex items-center gap-1">
+                          {act.startTime && <span>{formatTime12h(act.startTime)} • </span>}
+                          <span>{act.location.address.split(',')[0]}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0 flex items-center gap-1">
+                      {/* Direct button to route to next stop */}
+                      {nextAct && act.travelToNext && onSelectTransitRoute && (
+                        <button
+                          onClick={() => onSelectTransitRoute(act, nextAct, act.travelToNext!)}
+                          className="px-2 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition"
+                          title={`Adjust map to route to ${nextAct.title}`}
+                        >
+                          <Route className="w-3 h-3" />
+                          <span>Route</span>
+                        </button>
+                      )}
+
+                      {/* Move/Transfer to another Google Maps List */}
+                      {onMoveActivityToList && (
+                        <select
+                          value=""
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              onMoveActivityToList(act.id, currentList.id, e.target.value);
+                            }
+                          }}
+                          className="text-[10px] font-bold py-1 px-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer focus:outline-none"
+                          title="Move or Drop from this list to another Google Maps list"
+                        >
+                          <option value="">Move...</option>
+                          {googleMapsLists
+                            .filter((l) => l.id !== currentList.id)
+                            .map((target) => (
+                              <option key={target.id} value={target.id}>
+                                ➔ {target.title}
+                              </option>
+                            ))}
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Toggle List Drawer Button if Closed */}
+        {!showListDrawer && currentList && (
+          <button
+            onClick={() => setShowListDrawer(true)}
+            className="absolute bottom-4 left-4 z-20 flex items-center gap-1.5 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md px-3 py-2 rounded-xl shadow-lg border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer"
+          >
+            <Layers className="w-3.5 h-3.5 text-blue-600" />
+            <span>Show List Items ({currentList.activityCount})</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 };
 
 /**
- * High-fidelity Vector Map Mirror that renders real Google Maps-like road networks,
- * actual transit connections with bus/train lines, and authentic pin markers.
+ * Fast Vector Renderer component used when user toggles to "Vector Pins"
+ * Features whole-trip pins, sequential list numbering, and active transit leg route polylines.
  */
 const GoogleMapsVectorRenderer: React.FC<{
-  activities: Activity[];
+  currentList: GoogleMapsList;
+  allLists: GoogleMapsList[];
   selectedActivityId: string | null;
   onSelectActivity: (id: string) => void;
+  selectedTransitRoute?: SelectedTransitRoute | null;
+  onSelectDay?: (dayId: string) => void;
   center: { lat: number; lng: number };
-  zoomLevel: number;
-  onZoomIn: () => void;
-  onZoomOut: () => void;
-  onFitAll: () => void;
-  hoveredPinId: string | null;
-  setHoveredPinId: (id: string | null) => void;
-  showTransit: boolean;
-  mapType: 'roadmap' | 'satellite';
   onOpenTransitModal?: (fromActivity: Activity, toActivity: Activity, leg: TravelLeg) => void;
 }> = ({
-  activities,
+  currentList,
+  allLists,
   selectedActivityId,
   onSelectActivity,
+  selectedTransitRoute,
+  onSelectDay,
   center,
-  zoomLevel,
-  onZoomIn,
-  onZoomOut,
-  onFitAll,
-  hoveredPinId,
-  setHoveredPinId,
-  showTransit,
-  mapType,
-  onOpenTransitModal,
 }) => {
-  const lats = activities.map((a) => a.location.lat);
-  const lngs = activities.map((a) => a.location.lng);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [scale, setScale] = useState(1);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const minLat = Math.min(...lats, center.lat) - 0.035;
-  const maxLat = Math.max(...lats, center.lat) + 0.035;
-  const minLng = Math.min(...lngs, center.lng) - 0.045;
-  const maxLng = Math.max(...lngs, center.lng) + 0.045;
+  // Compile all activities across all lists for whole-trip awareness
+  const allActivitiesWithList = useMemo(() => {
+    const items: { activity: Activity; list: GoogleMapsList; isCurrentList: boolean; listIndex: number }[] = [];
+    allLists.forEach((list) => {
+      const isCurrent = currentList.id === 'all' || list.id === currentList.id;
+      list.activities.forEach((act, idx) => {
+        items.push({
+          activity: act,
+          list,
+          isCurrentList: isCurrent,
+          listIndex: idx,
+        });
+      });
+    });
+    return items;
+  }, [allLists, currentList]);
 
-  const latSpan = Math.max(0.01, maxLat - minLat);
-  const lngSpan = Math.max(0.01, maxLng - minLng);
+  const allLats = [...allActivitiesWithList.map((a) => a.activity.location.lat), center.lat];
+  const allLngs = [...allActivitiesWithList.map((a) => a.activity.location.lng), center.lng];
 
-  const width = 800;
-  const height = 540;
+  const minLat = Math.min(...allLats) - 0.03;
+  const maxLat = Math.max(...allLats) + 0.03;
+  const minLng = Math.min(...allLngs) - 0.04;
+  const maxLng = Math.max(...allLngs) + 0.04;
 
-  const project = (lat: number, lng: number) => {
-    const x = ((lng - minLng) / lngSpan) * (width - 160) + 80;
-    const y = ((maxLat - lat) / latSpan) * (height - 140) + 70;
-    return { x, y };
+  const latRange = Math.max(0.01, maxLat - minLat);
+  const lngRange = Math.max(0.01, maxLng - minLng);
+
+  const getCoordinates = (lat: number, lng: number) => {
+    const xPct = ((lng - minLng) / lngRange) * 100;
+    const yPct = ((maxLat - lat) / latRange) * 100;
+    return {
+      left: `${Math.max(6, Math.min(94, xPct))}%`,
+      top: `${Math.max(6, Math.min(94, yPct))}%`,
+    };
   };
 
-  const isSat = mapType === 'satellite';
+  const routeFromCoords = selectedTransitRoute
+    ? getCoordinates(selectedTransitRoute.fromActivity.location.lat, selectedTransitRoute.fromActivity.location.lng)
+    : null;
+  const routeToCoords = selectedTransitRoute
+    ? getCoordinates(selectedTransitRoute.toActivity.location.lat, selectedTransitRoute.toActivity.location.lng)
+    : null;
 
   return (
-    <div className={`relative w-full h-full overflow-hidden flex items-center justify-center ${
-      isSat ? 'bg-[#0f172a]' : 'bg-[#e5e3df] dark:bg-[#181d26]'
-    }`}>
-      {/* Floating Zoom and Navigation Controls */}
-      <div className="absolute right-4 bottom-8 z-20 flex flex-col gap-1 bg-white/95 dark:bg-slate-800/95 backdrop-blur-md shadow-xl rounded-2xl p-1 border border-slate-200 dark:border-slate-700">
-        <button
-          onClick={onZoomIn}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl text-slate-700 dark:text-slate-200 transition cursor-pointer"
-          title="Zoom In"
-        >
-          <ZoomIn className="w-4 h-4" />
-        </button>
-        <button
-          onClick={onZoomOut}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl text-slate-700 dark:text-slate-200 transition cursor-pointer"
-          title="Zoom Out"
-        >
-          <ZoomOut className="w-4 h-4" />
-        </button>
-        <div className="w-full h-px bg-slate-200 dark:bg-slate-700 my-0.5" />
-        <button
-          onClick={onFitAll}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl text-slate-700 dark:text-slate-200 transition cursor-pointer"
-          title="Fit all stops in view"
-        >
-          <Crosshair className="w-4 h-4" />
-        </button>
+    <div
+      ref={containerRef}
+      onMouseDown={(e) => {
+        setIsDragging(true);
+        dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+      }}
+      onMouseMove={(e) => {
+        if (!isDragging) return;
+        setPan({ x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y });
+      }}
+      onMouseUp={() => setIsDragging(false)}
+      onMouseLeave={() => setIsDragging(false)}
+      className="w-full h-full relative cursor-grab active:cursor-grabbing overflow-hidden bg-[#e5e3df] dark:bg-[#1e293b]"
+    >
+      <div
+        className="w-full h-full absolute inset-0 transition-transform duration-75 origin-center"
+        style={{
+          transform: `translate3d(${pan.x}px, ${pan.y}px, 0px) scale(${scale})`,
+        }}
+      >
+        {/* Subtle Map Grid Lines */}
+        <div className="absolute inset-0 opacity-15 pointer-events-none bg-[radial-gradient(#94a3b8_1px,transparent_1px)] [background-size:24px_24px]" />
+
+        {/* Active Transit Route Polyline Connection */}
+        {selectedTransitRoute && routeFromCoords && routeToCoords && (
+          <>
+            <svg className="absolute inset-0 w-full h-full pointer-events-none z-15 overflow-visible">
+              <line
+                x1={routeFromCoords.left}
+                y1={routeFromCoords.top}
+                x2={routeToCoords.left}
+                y2={routeToCoords.top}
+                stroke="#6366f1"
+                strokeWidth="4"
+                strokeDasharray="6 4"
+                strokeLinecap="round"
+                className="animate-pulse"
+              />
+            </svg>
+            <div
+              style={{
+                left: `calc((${routeFromCoords.left} + ${routeToCoords.left}) / 2)`,
+                top: `calc((${routeFromCoords.top} + ${routeToCoords.top}) / 2)`,
+              }}
+              className="absolute -translate-x-1/2 -translate-y-1/2 z-25 bg-purple-700 text-white px-2.5 py-1 rounded-full text-[10px] font-black shadow-lg flex items-center gap-1.5 border-2 border-white pointer-events-none"
+            >
+              {selectedTransitRoute.leg.mode === 'TRANSIT' && <Bus className="w-3 h-3" />}
+              {selectedTransitRoute.leg.mode === 'DRIVE' && <Car className="w-3 h-3" />}
+              {selectedTransitRoute.leg.mode === 'WALK' && <Footprints className="w-3 h-3" />}
+              {selectedTransitRoute.leg.mode === 'BICYCLE' && <Bike className="w-3 h-3" />}
+              <span>{selectedTransitRoute.leg.durationMinutes}m</span>
+              <span>•</span>
+              <span>{selectedTransitRoute.leg.distanceText}</span>
+            </div>
+          </>
+        )}
+
+        {/* Render Pins: Whole trip is visible, non-selected days/shelf are dimmed */}
+        {allActivitiesWithList.map(({ activity: act, list, isCurrentList, listIndex }) => {
+          const coords = getCoordinates(act.location.lat, act.location.lng);
+          const isSelected = act.id === selectedActivityId;
+          const isRouteFrom = selectedTransitRoute && selectedTransitRoute.fromActivity.id === act.id;
+          const isRouteTo = selectedTransitRoute && selectedTransitRoute.toActivity.id === act.id;
+          const isRouteParticipant = isRouteFrom || isRouteTo;
+
+          return (
+            <div
+              key={`${list.id}-${act.id}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectActivity(act.id);
+                if (!isCurrentList && onSelectDay) {
+                  onSelectDay(list.id);
+                }
+              }}
+              style={{ left: coords.left, top: coords.top }}
+              className={`absolute -translate-x-1/2 -translate-y-full cursor-pointer transition-all duration-200 ${
+                isRouteParticipant
+                  ? 'scale-125 z-40 opacity-100'
+                  : isSelected
+                  ? 'scale-125 z-30 opacity-100'
+                  : selectedTransitRoute
+                  ? 'z-10 opacity-30 filter grayscale-[40%]'
+                  : isCurrentList
+                  ? 'z-20 opacity-100 hover:scale-110'
+                  : 'z-10 opacity-40 hover:opacity-90 hover:scale-105 filter grayscale-[35%]'
+              }`}
+              title={`${act.title} (${list.title})`}
+            >
+              <div
+                className={`flex items-center justify-center rounded-full shadow-lg border-2 border-white text-white font-black text-xs transition-colors ${
+                  isRouteFrom
+                    ? 'bg-emerald-600 ring-4 ring-emerald-400/40 w-8 h-8'
+                    : isRouteTo
+                    ? 'bg-purple-600 ring-4 ring-purple-400/40 w-8 h-8'
+                    : isSelected
+                    ? 'bg-blue-600 w-8 h-8 ring-2 ring-blue-400'
+                    : isCurrentList
+                    ? (list.type === 'shelf' ? 'bg-indigo-600 w-7 h-7' : 'bg-[#ea4335] w-7 h-7')
+                    : 'bg-slate-500 w-6 h-6'
+                }`}
+              >
+                {isRouteFrom ? 'A' : isRouteTo ? 'B' : list.type === 'shelf' ? `S${listIndex + 1}` : listIndex + 1}
+              </div>
+              <div className="w-1.5 h-1.5 bg-black/40 rounded-full mx-auto mt-0.5 blur-xs" />
+
+              {!isCurrentList && !selectedTransitRoute && (
+                <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap px-1 py-0.2 bg-slate-800/80 text-white rounded text-[8px] font-bold pointer-events-none opacity-80">
+                  {list.type === 'shelf' ? 'Shelf' : `Day ${list.dayNumber}`}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
-      {/* SVG Map Canvas */}
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="w-full h-full object-cover"
-        style={{ filter: isSat ? 'brightness(0.85) contrast(1.1)' : undefined }}
-      >
-        <defs>
-          <pattern id="streetGrid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path
-              d="M 40 0 L 0 0 0 40"
-              fill="none"
-              stroke={isSat ? '#1e293b' : '#d1d5db'}
-              strokeWidth="0.5"
-            />
-          </pattern>
-        </defs>
-
-        {/* Base Map Tile Background */}
-        <rect width={width} height={height} fill={isSat ? '#0f172a' : '#f8f4f0'} />
-        <rect width={width} height={height} fill="url(#streetGrid)" opacity="0.6" />
-
-        {/* Urban Waterway / River Backbone */}
-        <path
-          d={`M 0 ${height * 0.4} Q ${width * 0.3} ${height * 0.45}, ${width * 0.55} ${height * 0.35} T ${width} ${height * 0.42}`}
-          fill="none"
-          stroke={isSat ? '#0e3a63' : '#aad3df'}
-          strokeWidth="38"
-          strokeLinecap="round"
-        />
-
-        {/* Major Road Arteries */}
-        <path
-          d={`M 0 ${height * 0.65} L ${width} ${height * 0.55}`}
-          stroke={isSat ? '#334155' : '#ffffff'}
-          strokeWidth="16"
-          strokeLinecap="round"
-        />
-        <path
-          d={`M ${width * 0.4} 0 L ${width * 0.45} ${height}`}
-          stroke={isSat ? '#334155' : '#ffffff'}
-          strokeWidth="14"
-          strokeLinecap="round"
-        />
-
-        {/* ACTUAL TRANSIT PATH CONNECTIONS BETWEEN CONSECUTIVE ACTIVITIES */}
-        {activities.map((act, idx) => {
-          if (idx >= activities.length - 1) return null;
-          const nextAct = activities[idx + 1];
-          const start = project(act.location.lat, act.location.lng);
-          const end = project(nextAct.location.lat, nextAct.location.lng);
-
-          // Realistic transit path with road grid bends (Manhattan transit routing)
-          const cornerX = end.x;
-          const cornerY = start.y;
-          const midX = (start.x + end.x) / 2;
-          const midY = (start.y + end.y) / 2;
-
-          const transitLineName = act.travelToNext?.transitDetails?.lineName || 'Bus Route';
-          const duration = act.travelToNext?.durationMinutes || 20;
-
-          return (
-            <g key={`transit-route-${act.id}-${nextAct.id}`} className="cursor-pointer">
-              {/* Outer Transit Glow Polyline */}
-              <path
-                d={`M ${start.x} ${start.y} L ${cornerX} ${cornerY} L ${end.x} ${end.y}`}
-                fill="none"
-                stroke="#8b5cf6"
-                strokeWidth="8"
-                strokeOpacity="0.22"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-
-              {/* Main Transit Polyline */}
-              <path
-                d={`M ${start.x} ${start.y} L ${cornerX} ${cornerY} L ${end.x} ${end.y}`}
-                fill="none"
-                stroke="#8b5cf6"
-                strokeWidth="4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeDasharray={showTransit ? undefined : '6 6'}
-              />
-
-              {/* Transit Line Mid-Point Badge */}
-              <g
-                transform={`translate(${(start.x + cornerX) / 2}, ${cornerY - 14})`}
-                onClick={() => {
-                  if (onOpenTransitModal && act.travelToNext) {
-                    onOpenTransitModal(act, nextAct, act.travelToNext);
-                  }
-                }}
-              >
-                <rect
-                  x="-42"
-                  y="-12"
-                  width="84"
-                  height="24"
-                  rx="12"
-                  fill="#1e293b"
-                  stroke="#ffffff"
-                  strokeWidth="1.5"
-                  filter="drop-shadow(0 4px 6px rgba(0,0,0,0.18))"
-                />
-                <text x="0" y="4" textAnchor="middle" fill="#ffffff" fontSize="10" fontWeight="700">
-                  🚌 {duration}m
-                </text>
-              </g>
-            </g>
-          );
-        })}
-
-        {/* PIN MARKERS FOR ALL ACTIVITIES */}
-        {activities.map((act, index) => {
-          const isSelected = act.id === selectedActivityId;
-          const isHovered = act.id === hoveredPinId;
-          const pt = project(act.location.lat, act.location.lng);
-
-          return (
-            <g
-              key={act.id}
-              transform={`translate(${pt.x}, ${pt.y})`}
-              className="cursor-pointer"
-              onClick={() => onSelectActivity(act.id)}
-              onMouseEnter={() => setHoveredPinId(act.id)}
-              onMouseLeave={() => setHoveredPinId(null)}
-            >
-              {/* Pin Shadow */}
-              <ellipse cx="0" cy="3" rx="7" ry="2.5" fill="#000000" fillOpacity="0.25" />
-
-              {/* Google Maps Pin Teardrop */}
-              <path
-                d="M 0 0 C -11 -11 -11 -26 0 -32 C 11 -26 11 -11 0 0 Z"
-                fill={isSelected ? '#2563eb' : '#dc2626'}
-                stroke="#ffffff"
-                strokeWidth="2"
-                filter={isSelected ? 'drop-shadow(0 6px 8px rgba(37,99,235,0.4))' : 'drop-shadow(0 3px 4px rgba(0,0,0,0.15))'}
-              />
-
-              {/* Center White Disc with Sequence Number */}
-              <circle cx="0" cy="-19" r="8" fill="#ffffff" />
-              <text
-                x="0"
-                y="-16"
-                textAnchor="middle"
-                fontSize="10"
-                fontWeight="800"
-                fill={isSelected ? '#2563eb' : '#dc2626'}
-              >
-                {index + 1}
-              </text>
-
-              {/* Label Callout on Hover / Selected */}
-              {(isSelected || isHovered) && (
-                <g transform="translate(0, -42)">
-                  <rect
-                    x="-65"
-                    y="-20"
-                    width="130"
-                    height="24"
-                    rx="8"
-                    fill="#1e293b"
-                    stroke="#ffffff"
-                    strokeWidth="1"
-                    filter="drop-shadow(0 4px 6px rgba(0,0,0,0.25))"
-                  />
-                  <text
-                    x="0"
-                    y="-4"
-                    textAnchor="middle"
-                    fontSize="11"
-                    fontWeight="700"
-                    fill="#ffffff"
-                  >
-                    {act.location.name.length > 18
-                      ? act.location.name.substring(0, 16) + '…'
-                      : act.location.name}
-                  </text>
-                </g>
-              )}
-            </g>
-          );
-        })}
-      </svg>
+      {/* Floating Zoom Controls */}
+      <div className="absolute bottom-4 right-4 z-20 flex flex-col gap-1 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md rounded-xl p-1 shadow-md border border-slate-200 dark:border-slate-800">
+        <button
+          onClick={() => setScale((s) => Math.min(2.5, s + 0.25))}
+          className="w-8 h-8 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-sm font-bold cursor-pointer"
+        >
+          +
+        </button>
+        <button
+          onClick={() => setScale((s) => Math.max(0.5, s - 0.25))}
+          className="w-8 h-8 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-sm font-bold cursor-pointer"
+        >
+          -
+        </button>
+        <button
+          onClick={() => {
+            setPan({ x: 0, y: 0 });
+            setScale(1);
+          }}
+          className="w-8 h-8 flex items-center justify-center text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+          title="Reset View"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </div>
   );
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Activity, Companion, TravelLeg, Trip, TripDay } from './types';
+import { Activity, Companion, TransportationMode, TravelLeg, Trip, TripDay, SelectedTransitRoute } from './types';
 import { INITIAL_TRIPS } from './data/defaultTrips';
 import { 
   loadTripFromLocalStorage, 
@@ -7,6 +7,7 @@ import {
   loadAllTrips, 
   deleteTripFromLocalStorage 
 } from './utils/storage';
+import { estimateTravelLeg, timeStringToMinutes, minutesToTimeString } from './utils/geo';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { Navbar } from './components/Navbar';
 import { GoogleMapView } from './components/Map/GoogleMapView';
@@ -19,7 +20,8 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { ApiKeyModal } from './components/ApiKeyModal';
 import { TripSelectorModal } from './components/TripSelectorModal';
 import { TransitDetailsModal } from './components/TransitDetailsModal';
-import { Map, Calendar, Plus } from 'lucide-react';
+import { ShelfListView } from './components/Shelf/ShelfListView';
+import { Map, Calendar, Plus, Layers } from 'lucide-react';
 
 const SESSION_ID = `sess-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -42,6 +44,7 @@ export default function App() {
   });
 
   const [activeDayId, setActiveDayId] = useState<string>(trip.days[0]?.id || 'day-1');
+  const [activeListId, setActiveListId] = useState<string>(trip.days[0]?.id || 'day-1');
   const [selectedActivityId, setSelectedActivityId] = useState<string | null>(
     trip.days[0]?.activities[0]?.id || null
   );
@@ -51,6 +54,7 @@ export default function App() {
 
   // Modals state
   const [isActivityModalOpen, setIsActivityModalOpen] = useState(false);
+  const [activityModalTargetList, setActivityModalTargetList] = useState<string>('shelf');
   const [isFinalizeModalOpen, setIsFinalizeModalOpen] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isOfflineModalOpen, setIsOfflineModalOpen] = useState(false);
@@ -69,6 +73,9 @@ export default function App() {
     toActivity: null,
     leg: null,
   });
+
+  // Selected transit route to adjust the map and show turn-by-turn directions
+  const [selectedTransitRoute, setSelectedTransitRoute] = useState<SelectedTransitRoute | null>(null);
 
   // Google Maps API Key handling
   const [apiKey, setApiKey] = useState<string>(() => {
@@ -263,6 +270,148 @@ export default function App() {
     });
   };
 
+  // Add an activity to a specified Google Maps List (Day List or Activity Shelf List)
+  const handleAddActivityToList = (newActivity: Activity, targetListId: string, startTime?: string) => {
+    if (targetListId === 'shelf') {
+      handleAddToShelf(newActivity);
+      return;
+    }
+
+    const updatedDays = trip.days.map((day) => {
+      if (day.id !== targetListId) return day;
+      const actWithTime: Activity = {
+        ...newActivity,
+        startTime: startTime || '09:30',
+      };
+      return {
+        ...day,
+        activities: [...day.activities, actWithTime],
+      };
+    });
+
+    syncTrip({
+      ...trip,
+      days: updatedDays,
+      updatedAt: new Date().toISOString(),
+    });
+    setSelectedActivityId(newActivity.id);
+  };
+
+  // Move / Transfer an activity between any Google Maps Lists (Drop from list A, Add to list B)
+  const handleMoveActivityToList = (activityId: string, fromListId: string, toListId: string) => {
+    if (fromListId === toListId) return;
+
+    // Find the source activity
+    let foundAct: Activity | undefined;
+    if (fromListId === 'shelf') {
+      foundAct = (trip.shelfActivities || []).find((a) => a.id === activityId);
+    } else {
+      const fromDay = trip.days.find((d) => d.id === fromListId);
+      foundAct = fromDay?.activities.find((a) => a.id === activityId);
+    }
+
+    if (!foundAct) return;
+
+    // 1. Remove from source list
+    let updatedShelf = trip.shelfActivities || [];
+    let updatedDays = [...trip.days];
+
+    if (fromListId === 'shelf') {
+      updatedShelf = updatedShelf.filter((a) => a.id !== activityId);
+    } else {
+      updatedDays = updatedDays.map((d) => {
+        if (d.id !== fromListId) return d;
+        return {
+          ...d,
+          activities: d.activities.filter((a) => a.id !== activityId),
+        };
+      });
+    }
+
+    // 2. Add to target list
+    if (toListId === 'shelf') {
+      const unscheduled: Activity = { ...foundAct, startTime: '' };
+      updatedShelf = [unscheduled, ...updatedShelf];
+    } else {
+      const toDay = trip.days.find((d) => d.id === toListId);
+      let nextStart = '09:30';
+      if (toDay && toDay.activities.length > 0) {
+        const lastAct = toDay.activities[toDay.activities.length - 1];
+        const endM = timeStringToMinutes(lastAct.startTime || '09:00') + lastAct.durationMinutes + 30;
+        nextStart = minutesToTimeString(Math.min(22 * 60, endM));
+      }
+      const scheduled: Activity = { ...foundAct, startTime: nextStart };
+
+      updatedDays = updatedDays.map((d) => {
+        if (d.id !== toListId) return d;
+        return {
+          ...d,
+          activities: [...d.activities, scheduled],
+        };
+      });
+    }
+
+    syncTrip({
+      ...trip,
+      days: updatedDays,
+      shelfActivities: updatedShelf,
+      updatedAt: new Date().toISOString(),
+    });
+    setSelectedActivityId(activityId);
+  };
+
+  // Dedicated List Selection (Day 1 List, Day 2 List..., Activity Shelf List)
+  const handleSelectList = (listId: string) => {
+    setActiveListId(listId);
+    setSelectedTransitRoute(null);
+    if (listId === 'shelf') {
+      if (trip.shelfActivities && trip.shelfActivities.length > 0) {
+        setSelectedActivityId(trip.shelfActivities[0].id);
+      }
+    } else if (listId !== 'all') {
+      setActiveDayId(listId);
+      const targetDay = trip.days.find((d) => d.id === listId);
+      if (targetDay && targetDay.activities.length > 0) {
+        setSelectedActivityId(targetDay.activities[0].id);
+      }
+    }
+  };
+
+  // Schedule activity directly from Shelf onto a specific Day List
+  const handleScheduleToDay = (activity: Activity, targetDayId: string, customStartTime?: string) => {
+    const newShelf = (trip.shelfActivities || []).filter((a) => a.id !== activity.id);
+
+    let start = customStartTime || '10:00';
+    if (!customStartTime) {
+      const targetDay = trip.days.find((d) => d.id === targetDayId);
+      if (targetDay && targetDay.activities.length > 0) {
+        const lastAct = targetDay.activities[targetDay.activities.length - 1];
+        const endM = timeStringToMinutes(lastAct.startTime || '09:00') + lastAct.durationMinutes + 30;
+        start = minutesToTimeString(Math.min(22 * 60, endM));
+      }
+    }
+
+    const scheduledAct: Activity = { ...activity, startTime: start };
+
+    const newDays = trip.days.map((d) => {
+      if (d.id !== targetDayId) return d;
+      return {
+        ...d,
+        activities: [...d.activities, scheduledAct],
+      };
+    });
+
+    syncTrip({
+      ...trip,
+      days: newDays,
+      shelfActivities: newShelf,
+      updatedAt: new Date().toISOString(),
+    });
+    setSelectedActivityId(activity.id);
+    setActiveListId(targetDayId);
+    setActiveDayId(targetDayId);
+  };
+
   // Add new day to trip
   const handleAddDay = () => {
     const nextDayNum = trip.days.length + 1;
@@ -280,6 +429,7 @@ export default function App() {
     };
     syncTrip(updatedTrip);
     setActiveDayId(newDay.id);
+    setActiveListId(newDay.id);
   };
 
   // Add companion
@@ -294,7 +444,9 @@ export default function App() {
   // Trip selection and creation handlers
   const handleSelectTrip = (selected: Trip) => {
     setTrip(selected);
-    setActiveDayId(selected.days[0]?.id || 'day-1');
+    const initialListId = selected.days[0]?.id || 'day-1';
+    setActiveDayId(initialListId);
+    setActiveListId(initialListId);
     setSelectedActivityId(selected.days[0]?.activities[0]?.id || null);
     saveTripToLocalStorage(selected);
     const newUrl = new URL(window.location.href);
@@ -331,19 +483,82 @@ export default function App() {
     });
   };
 
+  // Select transit route to adjust the map on the right side
+  const handleSelectTransitRoute = (fromActivity: Activity, toActivity: Activity, leg: TravelLeg) => {
+    setSelectedTransitRoute({
+      fromActivity,
+      toActivity,
+      leg,
+      dayId: activeDay.id,
+    });
+    setMobileTab('map');
+  };
+
+  // Clear transit route and return to Area Overview
+  const handleClearTransitRoute = () => {
+    setSelectedTransitRoute(null);
+  };
+
+  // Change transit mode between two activities and persist
+  const handleUpdateTransitMode = (mode: TransportationMode) => {
+    const from = transitModalData.fromActivity || selectedTransitRoute?.fromActivity;
+    const to = transitModalData.toActivity || selectedTransitRoute?.toActivity;
+    if (!from || !to) return;
+
+    const newLeg = estimateTravelLeg(
+      from.location.lat,
+      from.location.lng,
+      to.location.lat,
+      to.location.lng,
+      mode,
+      from.location.name,
+      to.location.name
+    );
+
+    const newDays = trip.days.map((day) => {
+      if (day.id !== activeDay.id) return day;
+      const updatedActivities = day.activities.map((a) => {
+        if (a.id === from.id) {
+          return {
+            ...a,
+            travelToNext: newLeg,
+          };
+        }
+        return a;
+      });
+      return { ...day, activities: updatedActivities };
+    });
+
+    syncTrip({
+      ...trip,
+      days: newDays,
+      updatedAt: new Date().toISOString(),
+    });
+
+    if (transitModalData.isOpen) {
+      setTransitModalData((prev) => ({
+        ...prev,
+        leg: newLeg,
+      }));
+    }
+
+    if (selectedTransitRoute) {
+      setSelectedTransitRoute({
+        fromActivity: from,
+        toActivity: to,
+        leg: newLeg,
+        dayId: activeDay.id,
+      });
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen w-screen bg-slate-100 dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-sans overflow-hidden">
       {/* Top Navigation Bar */}
       <Navbar
         trip={trip}
-        activeDayId={activeDay.id}
-        onSelectDay={(dayId) => {
-          setActiveDayId(dayId);
-          const targetDay = trip.days.find((d) => d.id === dayId);
-          if (targetDay && targetDay.activities.length > 0) {
-            setSelectedActivityId(targetDay.activities[0].id);
-          }
-        }}
+        activeListId={activeListId}
+        onSelectList={handleSelectList}
         onAddDay={handleAddDay}
         onOpenFinalizeModal={() => setIsFinalizeModalOpen(true)}
         onOpenShareModal={() => setIsShareModalOpen(true)}
@@ -354,28 +569,48 @@ export default function App() {
         hasGoogleApiKey={Boolean(apiKey)}
       />
 
-      {/* Mobile Day Selector Bar (below header on small screens) */}
+      {/* Mobile Day & Shelf Selector Bar (below header on small screens) */}
       <div className="md:hidden flex items-center justify-between px-3 py-2 bg-white dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800">
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
           {trip.days.map((day) => {
-            const isActive = day.id === activeDay.id;
+            const isActive = day.id === activeListId;
             return (
               <button
                 key={day.id}
-                onClick={() => setActiveDayId(day.id)}
-                className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer ${
+                onClick={() => handleSelectList(day.id)}
+                className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
                   isActive
                     ? 'bg-blue-600 text-white shadow-xs'
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
                 }`}
               >
-                Day {day.dayNumber}
+                <span>Day {day.dayNumber}</span>
+                <span className={`text-[10px] px-1 rounded-full ${isActive ? 'bg-blue-500 text-white' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                  {day.activities.length}
+                </span>
               </button>
             );
           })}
+
+          <button
+            onClick={() => handleSelectList('shelf')}
+            className={`px-3 py-1 rounded-xl text-xs font-bold whitespace-nowrap cursor-pointer flex items-center gap-1 ${
+              activeListId === 'shelf'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}
+          >
+            <Layers className="w-3 h-3" />
+            <span>Shelf</span>
+            <span className={`text-[10px] px-1 rounded-full ${activeListId === 'shelf' ? 'bg-blue-500 text-white' : 'bg-slate-200 dark:bg-slate-700'}`}>
+              {trip.shelfActivities?.length || 0}
+            </span>
+          </button>
+
           <button
             onClick={handleAddDay}
             className="p-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl"
+            title="Add Day"
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
@@ -410,28 +645,50 @@ export default function App() {
 
       {/* Main Content Area: Split-view on desktop, tabs on mobile */}
       <div className="flex-1 relative overflow-hidden flex flex-col md:grid md:grid-cols-12">
-        {/* Left Column: 12 AM - 11:59 PM Timeline + Activity Shelf */}
+        {/* Left Column: Day Timeline List or Dedicated Activity Shelf List */}
         <div
           className={`h-full md:col-span-6 lg:col-span-5 flex flex-col overflow-hidden ${
             mobileTab === 'timeline' ? 'flex' : 'hidden md:flex'
           }`}
         >
-          <TimelineView
-            day={activeDay}
-            shelfActivities={trip.shelfActivities || []}
-            selectedActivityId={selectedActivityId}
-            onSelectActivity={(id) => setSelectedActivityId(id)}
-            onUpdateActivity={handleUpdateActivity}
-            onDeleteActivity={handleDeleteActivity}
-            onAddActivityClick={() => setIsActivityModalOpen(true)}
-            onDropFromShelf={handleDropFromShelf}
-            onMoveToShelf={handleMoveToShelf}
-            onDeleteShelfActivity={handleDeleteShelfActivity}
-            onOpenTransitModal={handleOpenTransitModal}
-          />
+          {activeListId === 'shelf' ? (
+            <ShelfListView
+              shelfActivities={trip.shelfActivities || []}
+              tripDays={trip.days}
+              selectedActivityId={selectedActivityId}
+              onSelectActivity={(id) => setSelectedActivityId(id)}
+              onAddActivityClick={() => {
+                setActivityModalTargetList('shelf');
+                setIsActivityModalOpen(true);
+              }}
+              onDeleteShelfActivity={handleDeleteShelfActivity}
+              onMoveActivityToList={handleMoveActivityToList}
+              onScheduleToDay={handleScheduleToDay}
+            />
+          ) : (
+            <TimelineView
+              day={activeDay}
+              shelfActivities={trip.shelfActivities || []}
+              selectedActivityId={selectedActivityId}
+              onSelectActivity={(id) => setSelectedActivityId(id)}
+              selectedTransitRoute={selectedTransitRoute}
+              onSelectTransitRoute={handleSelectTransitRoute}
+              onClearTransitRoute={handleClearTransitRoute}
+              onUpdateActivity={handleUpdateActivity}
+              onDeleteActivity={handleDeleteActivity}
+              onAddActivityClick={() => {
+                setActivityModalTargetList(activeDay.id);
+                setIsActivityModalOpen(true);
+              }}
+              onDropFromShelf={handleDropFromShelf}
+              onMoveToShelf={handleMoveToShelf}
+              onDeleteShelfActivity={handleDeleteShelfActivity}
+              onOpenTransitModal={handleOpenTransitModal}
+            />
+          )}
         </div>
 
-        {/* Right Column: Google Maps View with Native Transit Connections (no bottom agenda) */}
+        {/* Right Column: Google Maps View with Native Lists & Embed API */}
         <div
           className={`h-full md:col-span-6 lg:col-span-7 flex flex-col overflow-hidden ${
             mobileTab === 'map' ? 'flex' : 'hidden md:flex'
@@ -440,13 +697,29 @@ export default function App() {
           <GoogleMapView
             apiKey={apiKey}
             activities={activeDay.activities}
+            allTripDays={trip.days}
+            activeDayId={activeDay.id}
+            activeListId={activeListId}
+            shelfActivities={trip.shelfActivities || []}
+            onSelectDay={(listId) => {
+              handleSelectList(listId);
+            }}
             selectedActivityId={selectedActivityId}
             onSelectActivity={(id) => setSelectedActivityId(id)}
+            selectedTransitRoute={selectedTransitRoute}
+            onSelectTransitRoute={handleSelectTransitRoute}
+            onClearTransitRoute={handleClearTransitRoute}
+            onUpdateTransitMode={handleUpdateTransitMode}
             isOffline={!isOnline}
             destinationName={trip.destination}
             center={trip.center}
             onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
             onOpenTransitModal={handleOpenTransitModal}
+            onMoveActivityToList={handleMoveActivityToList}
+            onOpenAddModal={(targetListId) => {
+              setActivityModalTargetList(targetListId || (activeListId === 'shelf' ? 'shelf' : activeDay.id));
+              setIsActivityModalOpen(true);
+            }}
           />
         </div>
       </div>
@@ -462,6 +735,9 @@ export default function App() {
         isOpen={isActivityModalOpen}
         onClose={() => setIsActivityModalOpen(false)}
         onAddToShelf={handleAddToShelf}
+        onAddToList={handleAddActivityToList}
+        tripDays={trip.days}
+        defaultTargetListId={activityModalTargetList}
         tripDestination={trip.destination}
         tripCenter={trip.center}
         apiKey={apiKey}
@@ -474,6 +750,7 @@ export default function App() {
         fromActivity={transitModalData.fromActivity}
         toActivity={transitModalData.toActivity}
         leg={transitModalData.leg}
+        onUpdateMode={handleUpdateTransitMode}
         apiKey={apiKey}
         isOffline={!isOnline}
       />

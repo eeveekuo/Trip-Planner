@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Activity, TransportationMode, TravelLeg, TransitDetails } from '../types';
-import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
-import { formatTime12h, timeStringToMinutes } from '../utils/geo';
+import { formatTime12h, timeStringToMinutes, buildGoogleMapsEmbedDirectionsUrl } from '../utils/geo';
 import { 
   X, 
   Bus, 
@@ -18,16 +17,21 @@ import {
   Sparkles,
   Info,
   ExternalLink,
-  ChevronRight
+  ChevronRight,
+  Layers,
+  Map as MapIcon
 } from 'lucide-react';
 
 interface TransitDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  originActivity: Activity;
-  destinationActivity: Activity;
-  travelLeg: TravelLeg;
-  onUpdateMode: (mode: TransportationMode) => void;
+  originActivity?: Activity | null;
+  fromActivity?: Activity | null;
+  destinationActivity?: Activity | null;
+  toActivity?: Activity | null;
+  travelLeg?: TravelLeg | null;
+  leg?: TravelLeg | null;
+  onUpdateMode?: (mode: TransportationMode) => void;
   apiKey: string;
   isOffline: boolean;
 }
@@ -36,40 +40,47 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
   isOpen,
   onClose,
   originActivity,
+  fromActivity,
   destinationActivity,
+  toActivity,
   travelLeg,
+  leg,
   onUpdateMode,
   apiKey,
   isOffline,
 }) => {
-  if (!isOpen) return null;
+  const origin = originActivity || fromActivity;
+  const destination = destinationActivity || toActivity;
+  const activeLeg = travelLeg || leg;
 
-  const [selectedMode, setSelectedMode] = useState<TransportationMode>(travelLeg.mode || 'TRANSIT');
+  if (!isOpen || !origin || !destination || !activeLeg) return null;
+
+  const [selectedMode, setSelectedMode] = useState<TransportationMode>(activeLeg.mode || 'TRANSIT');
   const [mapType, setMapType] = useState<'roadmap' | 'satellite'>('roadmap');
 
-  const transitInfo: TransitDetails = travelLeg.transitDetails || {
+  const transitInfo: TransitDetails = activeLeg.transitDetails || {
     lineName: 'Bus 02 (City Loop)',
     lineNumber: '02',
     vehicleType: 'BUS',
-    departureStop: `${originActivity.location.name} Stop`,
-    arrivalStop: `${destinationActivity.location.name} Stop`,
+    departureStop: `${origin.location.name} Stop`,
+    arrivalStop: `${destination.location.name} Stop`,
     numStops: 4,
     headwayMinutes: 8,
     operator: 'Metropolitan Transit Agency',
     fare: '$2.25',
     steps: [
-      `Walk 2 mins (~140m) from ${originActivity.location.name} to ${originActivity.location.name} Stop`,
+      `Walk 2 mins (~140m) from ${origin.location.name} to ${origin.location.name} Stop`,
       `Board Bus 02 toward Central Station`,
-      `Ride 4 stops along Main Avenue (~${Math.max(5, travelLeg.durationMinutes - 4)} mins)`,
-      `Alight at ${destinationActivity.location.name} Stop`,
-      `Walk 2 mins (~120m) to ${destinationActivity.location.name}`,
+      `Ride 4 stops along Main Avenue (~${Math.max(5, activeLeg.durationMinutes - 4)} mins)`,
+      `Alight at ${destination.location.name} Stop`,
+      `Walk 2 mins (~120m) to ${destination.location.name}`,
     ],
   };
 
-  const departureTimeMin = originActivity.startTime 
-    ? timeStringToMinutes(originActivity.startTime) + originActivity.durationMinutes 
+  const departureTimeMin = origin.startTime 
+    ? timeStringToMinutes(origin.startTime) + origin.durationMinutes 
     : 10 * 60;
-  const arrivalTimeMin = departureTimeMin + travelLeg.durationMinutes;
+  const arrivalTimeMin = departureTimeMin + activeLeg.durationMinutes;
 
   const depHour = Math.floor(departureTimeMin / 60);
   const depMin = departureTimeMin % 60;
@@ -79,12 +90,14 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
   const arrMin = arrivalTimeMin % 60;
   const arrTimeStr = `${arrHour.toString().padStart(2, '0')}:${arrMin.toString().padStart(2, '0')}`;
 
-  const midLat = (originActivity.location.lat + destinationActivity.location.lat) / 2;
-  const midLng = (originActivity.location.lng + destinationActivity.location.lng) / 2;
+  const midLat = (origin.location.lat + destination.location.lat) / 2;
+  const midLng = (origin.location.lng + destination.location.lng) / 2;
 
   const handleModeSelect = (mode: TransportationMode) => {
     setSelectedMode(mode);
-    onUpdateMode(mode);
+    if (onUpdateMode) {
+      onUpdateMode(mode);
+    }
   };
 
   const hasRealKey = Boolean(apiKey && apiKey.trim().length > 5);
@@ -107,11 +120,11 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
                   Transit & Travel Details
                 </h3>
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300">
-                  {travelLeg.mode}
+                  {activeLeg.mode}
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Path from <span className="font-semibold text-slate-700 dark:text-slate-200">{originActivity.location.name}</span> to <span className="font-semibold text-slate-700 dark:text-slate-200">{destinationActivity.location.name}</span>
+                Path from <span className="font-semibold text-slate-700 dark:text-slate-200">{origin.location.name}</span> to <span className="font-semibold text-slate-700 dark:text-slate-200">{destination.location.name}</span>
               </p>
             </div>
           </div>
@@ -168,7 +181,7 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
 
                 <div className="flex flex-col items-center px-3">
                   <span className="text-xs font-bold text-purple-700 dark:text-purple-300">
-                    {travelLeg.durationMinutes} mins
+                    {activeLeg.durationMinutes} mins
                   </span>
                   <div className="flex items-center gap-1 text-slate-400 mt-1">
                     <span className="w-2 h-2 rounded-full bg-purple-500" />
@@ -176,7 +189,7 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
                     <ArrowRight className="w-3.5 h-3.5 text-purple-500" />
                   </div>
                   <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    {travelLeg.distanceText}
+                    {activeLeg.distanceText}
                   </span>
                 </div>
 
@@ -255,9 +268,9 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
                   ))
                 ) : (
                   <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300">
-                    <p>1. Depart from {originActivity.location.name}</p>
-                    <p>2. Travel via {travelLeg.summary || 'urban route'}</p>
-                    <p>3. Arrive at {destinationActivity.location.name}</p>
+                    <p>1. Depart from {origin.location.name}</p>
+                    <p>2. Travel via {activeLeg.summary || 'urban route'}</p>
+                    <p>3. Arrive at {destination.location.name}</p>
                   </div>
                 )}
               </div>
@@ -267,9 +280,9 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
             <div className="mt-auto pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <a
                 href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-                  originActivity.location.address || originActivity.location.name
+                  origin.location.address || origin.location.name
                 )}&destination=${encodeURIComponent(
-                  destinationActivity.location.address || destinationActivity.location.name
+                  destination.location.address || destination.location.name
                 )}&travelmode=${selectedMode.toLowerCase()}`}
                 target="_blank"
                 rel="noreferrer"
@@ -290,45 +303,25 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
 
           {/* Right Interactive Route Map UI */}
           <div className="md:col-span-7 relative h-full bg-slate-100 dark:bg-slate-950 flex flex-col overflow-hidden">
-            {hasRealKey && !isOffline ? (
-              <APIProvider apiKey={apiKey}>
-                <Map
-                  center={{ lat: midLat, lng: midLng }}
-                  zoom={14}
-                  mapId="DEMO_MAP_ID"
-                  mapTypeId={mapType}
-                  internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                  style={{ width: '100%', height: '100%' }}
-                  disableDefaultUI={false}
-                  gestureHandling={'greedy'}
-                >
-                  {/* Origin Pin */}
-                  <AdvancedMarker
-                    position={{ lat: originActivity.location.lat, lng: originActivity.location.lng }}
-                    title={originActivity.location.name}
-                  >
-                    <Pin background="#3b82f6" borderColor="#ffffff" glyphColor="#ffffff">
-                      <span className="text-white text-[10px] font-bold">A</span>
-                    </Pin>
-                  </AdvancedMarker>
-
-                  {/* Destination Pin */}
-                  <AdvancedMarker
-                    position={{ lat: destinationActivity.location.lat, lng: destinationActivity.location.lng }}
-                    title={destinationActivity.location.name}
-                  >
-                    <Pin background="#8b5cf6" borderColor="#ffffff" glyphColor="#ffffff">
-                      <span className="text-white text-[10px] font-bold">B</span>
-                    </Pin>
-                  </AdvancedMarker>
-                </Map>
-              </APIProvider>
+            {!isOffline ? (
+              <iframe
+                title="Google Maps Route Embed"
+                src={buildGoogleMapsEmbedDirectionsUrl(
+                  [origin, destination],
+                  apiKey,
+                  selectedMode.toLowerCase(),
+                  false
+                )}
+                className="w-full h-full border-0"
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+              />
             ) : (
               /* High-Fidelity Vector Route Canvas */
               <VectorRouteMap
-                origin={originActivity}
-                destination={destinationActivity}
-                leg={travelLeg}
+                origin={origin}
+                destination={destination}
+                leg={activeLeg}
                 transitInfo={transitInfo}
                 mode={selectedMode}
               />
@@ -339,12 +332,12 @@ export const TransitDetailsModal: React.FC<TransitDetailsModalProps> = ({
               <div className="pointer-events-auto bg-white/95 dark:bg-slate-800/95 backdrop-blur-md rounded-2xl px-3.5 py-2 shadow-lg border border-slate-200 dark:border-slate-700 flex items-center gap-2.5">
                 <div className="w-3 h-3 rounded-full bg-blue-500" />
                 <span className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate max-w-[120px]">
-                  {originActivity.location.name}
+                  {origin.location.name}
                 </span>
                 <ArrowRight className="w-3.5 h-3.5 text-purple-600 shrink-0" />
                 <div className="w-3 h-3 rounded-full bg-purple-500" />
                 <span className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate max-w-[120px]">
-                  {destinationActivity.location.name}
+                  {destination.location.name}
                 </span>
               </div>
 

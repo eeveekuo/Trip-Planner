@@ -221,3 +221,208 @@ export function validateBusinessHours(activity: Activity, dayOfWeekIndex?: numbe
     suggestedDurationMinutes: suggestedDuration,
   };
 }
+
+/**
+ * Computes a smooth chronological gradient color across the events of a day
+ * from morning (sapphire blue) -> midday (indigo/violet) -> afternoon (magenta/rose) -> evening (sunset orange).
+ */
+export function getChronologicalColor(index: number, total: number): string {
+  if (total <= 1) return '#2563eb';
+  const palette = [
+    '#2563eb', // Morning Sapphire Blue
+    '#0284c7', // Sky Blue
+    '#4f46e5', // Royal Indigo
+    '#7c3aed', // Purple
+    '#9333ea', // Violet
+    '#c026d3', // Fuchsia
+    '#e11d48', // Rose
+    '#ea580c', // Sunset Amber
+  ];
+  const t = Math.max(0, Math.min(1, index / (total - 1)));
+  const colorIdx = Math.round(t * (palette.length - 1));
+  return palette[colorIdx];
+}
+
+/**
+ * Builds a direct Google Maps native Web Directions URL linking all activities in order.
+ * Users can open this URL directly in Google Maps and save it to their saved lists.
+ */
+export function buildGoogleMapsPlaceUrl(name: string, address: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${name}, ${address}`)}`;
+}
+
+export function buildGoogleMapsDirectionsUrl(activities: Activity[]): string {
+  if (activities.length === 0) return 'https://www.google.com/maps';
+  if (activities.length === 1) {
+    const act = activities[0];
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      `${act.location.name}, ${act.location.address}`
+    )}`;
+  }
+
+  const encodedStops = activities.map((a) =>
+    encodeURIComponent(`${a.location.name}, ${a.location.address}`)
+  );
+
+  return `https://www.google.com/maps/dir/${encodedStops.join('/')}`;
+}
+
+/**
+ * Builds direct Google Maps native Web Directions URL specifically between two activities.
+ */
+export function buildGoogleMapsLegDirectionsWebUrl(
+  fromActivity: Activity,
+  toActivity: Activity,
+  mode: TransportationMode | string = 'TRANSIT'
+): string {
+  const origin = encodeURIComponent(`${fromActivity.location.name}, ${fromActivity.location.address}`);
+  const destination = encodeURIComponent(`${toActivity.location.name}, ${toActivity.location.address}`);
+  const dirMode = mode.toLowerCase() === 'drive' ? 'driving' : mode.toLowerCase() === 'walk' ? 'walking' : mode.toLowerCase() === 'bicycle' ? 'bicycling' : 'transit';
+  return `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=${dirMode}`;
+}
+
+/**
+ * Builds a Google Maps Embed directions URL between two specific activities for a clicked transit route.
+ */
+export function buildGoogleMapsEmbedLegDirectionsUrl(
+  fromActivity: Activity,
+  toActivity: Activity,
+  mode: TransportationMode | string = 'TRANSIT',
+  apiKey: string = '',
+  useCloudKey: boolean = false
+): string {
+  const originStr = encodeURIComponent(`${fromActivity.location.name}, ${fromActivity.location.address}`);
+  const destStr = encodeURIComponent(`${toActivity.location.name}, ${toActivity.location.address}`);
+  const m = mode.toUpperCase();
+
+  const cloudMode = m === 'DRIVE' ? 'driving' : m === 'WALK' ? 'walking' : m === 'BICYCLE' ? 'bicycling' : 'transit';
+
+  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
+    return `https://www.google.com/maps/embed/v1/directions?key=${apiKey}&origin=${originStr}&destination=${destStr}&mode=${cloudMode}`;
+  }
+
+  // Universal directions embed:
+  // dirflg: 'r' for transit, 'd' for driving, 'w' for walking, 'b' for bicycling
+  let dirflg = 'r';
+  if (m === 'DRIVE') dirflg = 'd';
+  else if (m === 'WALK') dirflg = 'w';
+  else if (m === 'BICYCLE') dirflg = 'b';
+
+  return `https://maps.google.com/maps?saddr=${originStr}&daddr=${destStr}&dirflg=${dirflg}&output=embed`;
+}
+
+/**
+ * Builds a Google Maps Embed Area Overview URL showing all places listed for that day.
+ */
+export function buildGoogleMapsEmbedAreaOverviewUrl(
+  activities: Activity[],
+  destinationName: string = '',
+  apiKey: string = '',
+  useCloudKey: boolean = false
+): string {
+  if (activities.length === 0) {
+    const q = encodeURIComponent(destinationName || 'Tokyo, Japan');
+    return useCloudKey && apiKey && apiKey.trim().length > 5
+      ? `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`
+      : `https://maps.google.com/maps?q=${q}&output=embed`;
+  }
+
+  if (activities.length === 1) {
+    const act = activities[0];
+    const q = encodeURIComponent(`${act.location.name}, ${act.location.address}`);
+    return useCloudKey && apiKey && apiKey.trim().length > 5
+      ? `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`
+      : `https://maps.google.com/maps?q=${q}&output=embed`;
+  }
+
+  // Combine top places or create search query for the day's places
+  const placeNames = activities.map((a) => a.location.name).slice(0, 4).join(' ');
+  const query = `${placeNames} ${destinationName}`.trim();
+  const q = encodeURIComponent(query);
+
+  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
+    return `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`;
+  }
+  return `https://maps.google.com/maps?q=${q}&output=embed`;
+}
+
+/**
+ * Builds a Google Maps Embed directions URL.
+ * By default (useCloudKey = false), generates a Universal Google Maps Embed URL
+ * which requires NO Google Cloud Console API activations and will never fail with "API is not activated".
+ * If useCloudKey = true and a valid API key is present, uses the Google Cloud Embed API v1.
+ */
+export function buildGoogleMapsEmbedDirectionsUrl(
+  activities: Activity[],
+  apiKey: string = '',
+  mode: string = 'transit',
+  useCloudKey: boolean = false
+): string {
+  if (activities.length === 0) {
+    return useCloudKey && apiKey && apiKey.trim().length > 5
+      ? `https://www.google.com/maps/embed/v1/view?key=${apiKey}&center=35.6762,139.6503&zoom=13`
+      : `https://maps.google.com/maps?q=Tokyo&output=embed`;
+  }
+
+  if (activities.length === 1) {
+    const act = activities[0];
+    const q = encodeURIComponent(`${act.location.name}, ${act.location.address}`);
+    return useCloudKey && apiKey && apiKey.trim().length > 5
+      ? `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`
+      : `https://maps.google.com/maps?q=${q}&output=embed`;
+  }
+
+  const origin = activities[0];
+  const destination = activities[activities.length - 1];
+  const waypoints = activities.slice(1, -1);
+
+  const originStr = encodeURIComponent(`${origin.location.name}, ${origin.location.address}`);
+  const destStr = encodeURIComponent(`${destination.location.name}, ${destination.location.address}`);
+
+  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
+    let url = `https://www.google.com/maps/embed/v1/directions?key=${apiKey}&origin=${originStr}&destination=${destStr}&mode=${mode}`;
+    if (waypoints.length > 0) {
+      const waypointsStr = waypoints
+        .slice(0, 8)
+        .map((w) => encodeURIComponent(`${w.location.name}, ${w.location.address}`))
+        .join('|');
+      url += `&waypoints=${waypointsStr}`;
+    }
+    return url;
+  }
+
+  // Universal Google Maps embed directions (100% active, no cloud API enablement required)
+  return `https://maps.google.com/maps?saddr=${originStr}&daddr=${destStr}&output=embed`;
+}
+
+/**
+ * Builds a Google Maps Embed single place URL
+ */
+export function buildGoogleMapsEmbedPlaceUrl(
+  name: string,
+  address: string,
+  apiKey: string = '',
+  useCloudKey: boolean = false
+): string {
+  const q = encodeURIComponent(`${name}, ${address}`);
+  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
+    return `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`;
+  }
+  return `https://maps.google.com/maps?q=${q}&output=embed`;
+}
+
+/**
+ * Builds a Google Maps Embed search URL
+ */
+export function buildGoogleMapsEmbedSearchUrl(
+  query: string, 
+  apiKey: string = '',
+  useCloudKey: boolean = false
+): string {
+  const q = encodeURIComponent(query);
+  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
+    return `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`;
+  }
+  return `https://maps.google.com/maps?q=${q}&output=embed`;
+}
+

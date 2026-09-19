@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Activity, TransportationMode, TravelLeg, TripDay } from '../../types';
+import { Activity, TransportationMode, TravelLeg, TripDay, SelectedTransitRoute } from '../../types';
 import { 
   estimateTravelLeg, 
   formatDuration, 
@@ -30,7 +30,9 @@ import {
   Calendar,
   ArrowDownToLine,
   ArrowUpRight,
-  Maximize2
+  Maximize2,
+  Compass,
+  RotateCcw
 } from 'lucide-react';
 
 interface TimelineViewProps {
@@ -38,6 +40,9 @@ interface TimelineViewProps {
   shelfActivities?: Activity[];
   selectedActivityId: string | null;
   onSelectActivity: (id: string) => void;
+  selectedTransitRoute?: SelectedTransitRoute | null;
+  onSelectTransitRoute?: (fromActivity: Activity, toActivity: Activity, leg: TravelLeg) => void;
+  onClearTransitRoute?: () => void;
   onUpdateActivity: (updated: Activity) => void;
   onDeleteActivity: (id: string) => void;
   onAddActivityClick: () => void;
@@ -59,6 +64,9 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   shelfActivities = [],
   selectedActivityId,
   onSelectActivity,
+  selectedTransitRoute,
+  onSelectTransitRoute,
+  onClearTransitRoute,
   onUpdateActivity,
   onDeleteActivity,
   onAddActivityClick,
@@ -75,6 +83,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   const [currentLiveVal, setCurrentLiveVal] = useState<number | null>(null);
   const [draggedShelfActId, setDraggedShelfActId] = useState<string | null>(null);
   const [isTimelineDragOver, setIsTimelineDragOver] = useState(false);
+  const [isShelfDragOver, setIsShelfDragOver] = useState(false);
   const [dropPreviewTime, setDropPreviewTime] = useState<string | null>(null);
 
   // Initial scroll to ~08:00 AM so daytime is immediately in view
@@ -248,23 +257,58 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 overflow-hidden select-none">
       {/* 1. Activity Shelf Above Agenda (Shared Across Days) */}
-      <div className="shrink-0 bg-slate-50 dark:bg-slate-850 border-b border-slate-200 dark:border-slate-800 p-3.5 sm:p-4">
+      <div 
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          if (!isShelfDragOver) setIsShelfDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setIsShelfDragOver(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsShelfDragOver(false);
+          const actId = e.dataTransfer.getData('text/activity-id') || e.dataTransfer.getData('text/plain');
+          if (actId) {
+            onMoveToShelf(actId);
+          }
+        }}
+        className={`shrink-0 border-b p-3.5 sm:p-4 transition-colors ${
+          isShelfDragOver 
+            ? 'bg-blue-50/80 dark:bg-blue-950/50 border-blue-400 dark:border-blue-600 ring-2 ring-blue-500/40' 
+            : 'bg-slate-50 dark:bg-slate-850 border-slate-200 dark:border-slate-800'
+        }`}
+      >
         <div className="flex items-center justify-between mb-2.5">
           <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-xl bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+            <div className={`w-7 h-7 rounded-xl flex items-center justify-center transition ${
+              isShelfDragOver 
+                ? 'bg-blue-600 text-white animate-pulse' 
+                : 'bg-blue-100 dark:bg-blue-900/60 text-blue-600 dark:text-blue-400'
+            }`}>
               <Layers className="w-4 h-4" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                  Activity Shelf
+                  Activity Shelf List
                 </h3>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
-                  {shelfActivities.length} Unscheduled
+                  {shelfActivities.length} Places
                 </span>
+                {isShelfDragOver && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white animate-bounce">
+                    Drop to add to Shelf List
+                  </span>
+                )}
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Drag places onto today&apos;s timeline or switch days to schedule
+                {isShelfDragOver 
+                  ? `Release to drop from Day ${day.dayNumber} List ➔ Add to Activity Shelf List` 
+                  : `Drag places to Day ${day.dayNumber} Timeline, or drag scheduled activities back here to drop to shelf`}
               </p>
             </div>
           </div>
@@ -274,7 +318,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Search & Add</span>
+            <span>Search & Add to List</span>
           </button>
         </div>
 
@@ -282,7 +326,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
         {shelfActivities.length === 0 ? (
           <div className="py-3 px-4 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 bg-white/70 dark:bg-slate-800/40 text-center">
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Your activity shelf is currently empty. Click <span className="font-semibold text-blue-600 dark:text-blue-400">&ldquo;Search & Add&rdquo;</span> to pin places via Google Maps!
+              Activity Shelf List is empty. Click <span className="font-semibold text-blue-600 dark:text-blue-400">&ldquo;Search & Add to List&rdquo;</span> to add places via Google Maps!
             </p>
           </div>
         ) : (
@@ -342,10 +386,11 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                     <button
                       type="button"
                       onClick={() => handleScheduleFromShelf(act)}
-                      className="px-2 py-0.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/80 text-blue-600 dark:text-blue-300 font-bold rounded-lg transition cursor-pointer flex items-center gap-1"
+                      className="px-2 py-0.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/80 text-blue-600 dark:text-blue-300 font-bold rounded-lg transition cursor-pointer flex items-center gap-1 text-[10px]"
+                      title={`Add to Day ${day.dayNumber} List`}
                     >
                       <ArrowDownToLine className="w-2.5 h-2.5" />
-                      <span>Schedule</span>
+                      <span>Add to Day {day.dayNumber}</span>
                     </button>
                   </div>
                 </div>
@@ -357,21 +402,28 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 
       {/* 2. Agenda Timeline Sub-header */}
       <div className="px-5 py-2.5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0 bg-slate-50/70 dark:bg-slate-850/60 text-xs">
-        <div className="flex items-center gap-2">
-          <Calendar className="w-3.5 h-3.5 text-blue-600" />
-          <span className="font-bold text-slate-800 dark:text-slate-200">
+        <div className="flex items-center gap-2 min-w-0">
+          <Calendar className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+          <span className="font-bold text-slate-800 dark:text-slate-200 shrink-0">
             Day {day.dayNumber} Timeline
           </span>
-          <span className="text-slate-400">•</span>
-          <span className="text-slate-500 dark:text-slate-400 font-medium">
+          <span className="text-slate-400 hidden sm:inline">•</span>
+          <span className="text-slate-500 dark:text-slate-400 font-medium hidden sm:inline">
             12:00 AM – 11:59 PM (24h Full Day Grid)
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-          <span>Allowable Business Hours verified</span>
-        </div>
+        {/* Active Route on Map or Reset to Day Area Overview */}
+        {selectedTransitRoute && onClearTransitRoute && (
+          <button
+            onClick={onClearTransitRoute}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-bold text-[11px] transition cursor-pointer border border-blue-200 dark:border-blue-800 shadow-xs shrink-0"
+            title="Return right-side map to full Day Area Overview showing all places"
+          >
+            <Compass className="w-3 h-3 text-blue-600" />
+            <span>Map: Back to Area Overview</span>
+          </button>
+        )}
       </div>
 
       {/* 3. The 12 AM - 11:59 PM Interactive Timeline Container */}
@@ -472,19 +524,33 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               const nextStartMin = nextAct ? timeStringToMinutes(nextAct.startTime || '09:00') : 0;
               const curEndMin = actStartMin + act.durationMinutes;
               const gapMinutes = nextAct ? nextStartMin - curEndMin : 0;
-              const hasGapConflict = nextAct && travelLeg && gapMinutes < travelLeg.durationMinutes;
+              const isOverlapping = nextAct && gapMinutes < 0;
+              const isTravelBufferDeficit = nextAct && travelLeg && gapMinutes >= 0 && gapMinutes < travelLeg.durationMinutes;
+              const hasGapConflict = Boolean(isOverlapping || isTravelBufferDeficit);
+              const hasConflict = validation.isConflict || hasGapConflict;
 
               return (
                 <React.Fragment key={act.id}>
-                  {/* The Activity Box */}
+                  {/* The Activity Box - Draggable to move back to shelf or rearrange */}
                   <div
+                    draggable
+                    onDragStart={(e) => {
+                      const target = e.target as HTMLElement;
+                      if (target.closest('button') || resizingActivityId || movingActivityId) {
+                        e.preventDefault();
+                        return;
+                      }
+                      e.dataTransfer.setData('text/activity-id', act.id);
+                      e.dataTransfer.setData('text/plain', act.id);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
                     onClick={() => onSelectActivity(act.id)}
-                    className={`absolute left-2 right-2 rounded-2xl p-3 border shadow-xs transition-all pointer-events-auto flex flex-col justify-between ${
+                    className={`absolute left-2 right-2 rounded-2xl p-3 border shadow-xs transition-all pointer-events-auto flex flex-col justify-between cursor-grab active:cursor-grabbing ${
                       isSelected
                         ? 'ring-2 ring-blue-500 shadow-md z-20'
                         : 'z-10 hover:shadow-md'
                     } ${
-                      validation.isConflict
+                      hasConflict
                         ? 'border-amber-400 bg-amber-50/90 dark:bg-amber-950/40 text-amber-950 dark:text-amber-100'
                         : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100'
                     }`}
@@ -531,7 +597,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                             onMoveToShelf(act.id);
                           }}
                           className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-md hover:bg-blue-50 dark:hover:bg-blue-950/40 transition cursor-pointer"
-                          title="Move back to Activity Shelf"
+                          title="Move back to Activity Shelf (or drag card onto shelf)"
                         >
                           <Layers className="w-3.5 h-3.5" />
                         </button>
@@ -556,33 +622,46 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                       </p>
                     )}
 
-                    {/* Business Hours Allowable Status & Warnings */}
-                    <div className="mt-auto pt-1">
-                      {validation.isConflict ? (
-                        <div className="flex items-center justify-between gap-2 p-1 bg-amber-100/70 dark:bg-amber-950/60 rounded-lg text-[10px] text-amber-900 dark:text-amber-200">
-                          <div className="flex items-center gap-1 truncate">
-                            <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
-                            <span className="truncate font-medium">{validation.message}</span>
+                    {/* Warnings (Overlaps, Insufficient Transit Gap, Outside Business Hours) - Only rendered when an issue exists */}
+                    {hasConflict && (
+                      <div className="mt-auto pt-1 space-y-1">
+                        {isOverlapping && (
+                          <div className="flex items-center gap-1.5 p-1 bg-red-100/90 dark:bg-red-950/70 rounded-lg text-[10px] text-red-900 dark:text-red-200 font-medium">
+                            <AlertTriangle className="w-3 h-3 text-red-600 shrink-0" />
+                            <span className="truncate">Overlaps next event by {Math.abs(gapMinutes)}m</span>
                           </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleSnapToHours(act);
-                            }}
-                            className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[9px] font-bold shrink-0 shadow-xs transition cursor-pointer"
-                            title="Auto-adjust to allowable opening hours"
-                          >
-                            <Wand2 className="w-2.5 h-2.5" />
-                            <span>Snap</span>
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                          <CheckCircle2 className="w-3 h-3" />
-                          <span>Within allowable hours ({act.businessHours.open}–{act.businessHours.close})</span>
-                        </div>
-                      )}
-                    </div>
+                        )}
+
+                        {isTravelBufferDeficit && (
+                          <div className="flex items-center gap-1.5 p-1 bg-amber-100/80 dark:bg-amber-950/60 rounded-lg text-[10px] text-amber-900 dark:text-amber-200 font-medium">
+                            <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                            <span className="truncate">
+                              Tight transit: {travelLeg?.durationMinutes}m route has only {gapMinutes}m gap
+                            </span>
+                          </div>
+                        )}
+
+                        {validation.isConflict && (
+                          <div className="flex items-center justify-between gap-2 p-1 bg-amber-100/80 dark:bg-amber-950/60 rounded-lg text-[10px] text-amber-900 dark:text-amber-200">
+                            <div className="flex items-center gap-1 truncate">
+                              <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                              <span className="truncate font-medium">{validation.message}</span>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSnapToHours(act);
+                              }}
+                              className="flex items-center gap-1 px-1.5 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[9px] font-bold shrink-0 shadow-xs transition cursor-pointer"
+                              title="Auto-adjust to allowable opening hours"
+                            >
+                              <Wand2 className="w-2.5 h-2.5" />
+                              <span>Snap</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Bottom Resize Handle: Draggable Activity Length */}
                     <div
@@ -602,73 +681,122 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                         top: `${topPx + heightPx + 2}px`,
                       }}
                     >
-                      <div
-                        onClick={() => {
-                          if (onOpenTransitModal && travelLeg) {
-                            onOpenTransitModal(act, nextAct, travelLeg);
-                          }
-                        }}
-                        className={`my-1 px-3 py-2 rounded-2xl border text-xs flex items-center justify-between gap-2 transition-all cursor-pointer group ${
-                          hasGapConflict
-                            ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-800 dark:text-red-200'
-                            : 'bg-purple-50/80 hover:bg-purple-100/80 dark:bg-purple-950/30 dark:hover:bg-purple-950/50 border-purple-200 dark:border-purple-800/60 text-slate-700 dark:text-slate-200 shadow-xs'
-                        }`}
-                      >
-                        {/* Transit Line and Mode Badge */}
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="w-6 h-6 rounded-lg bg-purple-600 text-white flex items-center justify-center shadow-xs shrink-0">
-                            {travelLeg?.mode === 'TRANSIT' && <Bus className="w-3.5 h-3.5" />}
-                            {travelLeg?.mode === 'DRIVE' && <Car className="w-3.5 h-3.5" />}
-                            {travelLeg?.mode === 'WALK' && <Footprints className="w-3.5 h-3.5" />}
-                            {travelLeg?.mode === 'BICYCLE' && <Bike className="w-3.5 h-3.5" />}
-                          </div>
+                      {(() => {
+                        const isSelectedRoute =
+                          selectedTransitRoute &&
+                          selectedTransitRoute.fromActivity.id === act.id &&
+                          selectedTransitRoute.toActivity.id === nextAct.id;
 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-bold text-xs text-purple-900 dark:text-purple-200 truncate">
-                                {travelLeg?.transitDetails?.lineName || `${travelLeg?.mode || 'TRANSIT'} to Stop #${index + 2}`}
-                              </span>
-                              <span className="text-[11px] font-bold text-purple-700 dark:text-purple-300 shrink-0">
-                                • {travelLeg?.durationMinutes} mins ({travelLeg?.distanceText})
-                              </span>
-                            </div>
-
-                            {/* Specific Bus Details if available */}
-                            {travelLeg?.transitDetails && (
-                              <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                                {travelLeg.transitDetails.departureStop} → {travelLeg.transitDetails.arrivalStop} ({travelLeg.transitDetails.numStops} stops)
-                              </p>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Gap and Open Transit Route Modal Button */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          {hasGapConflict ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-bold text-red-600 dark:text-red-400">
-                                ⚠️ Only {gapMinutes}m buffer!
-                              </span>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleAutoAlignNext(act, nextAct);
-                                }}
-                                className="flex items-center gap-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[10px] font-bold shadow-xs transition cursor-pointer"
-                                title="Adjust next start time to allow travel"
+                        return (
+                          <div
+                            onClick={() => {
+                              if (onSelectTransitRoute && travelLeg) {
+                                onSelectTransitRoute(act, nextAct, travelLeg);
+                              } else if (onOpenTransitModal && travelLeg) {
+                                onOpenTransitModal(act, nextAct, travelLeg);
+                              }
+                            }}
+                            className={`my-1 px-3 py-2 rounded-2xl border text-xs flex items-center justify-between gap-2 transition-all cursor-pointer group ${
+                              hasGapConflict
+                                ? 'bg-red-50 dark:bg-red-950/40 border-red-300 dark:border-red-800 text-red-800 dark:text-red-200'
+                                : isSelectedRoute
+                                ? 'bg-blue-50/90 dark:bg-blue-950/70 border-blue-400 dark:border-blue-600 text-blue-900 dark:text-blue-100 shadow-md ring-2 ring-blue-500/40'
+                                : 'bg-purple-50/80 hover:bg-purple-100/80 dark:bg-purple-950/30 dark:hover:bg-purple-950/50 border-purple-200 dark:border-purple-800/60 text-slate-700 dark:text-slate-200 shadow-xs'
+                            }`}
+                          >
+                            {/* Transit Line and Mode Badge */}
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div
+                                className={`w-6 h-6 rounded-lg text-white flex items-center justify-center shadow-xs shrink-0 ${
+                                  isSelectedRoute ? 'bg-blue-600' : 'bg-purple-600'
+                                }`}
                               >
-                                <span>Adjust Gap</span>
-                                <ChevronRight className="w-2.5 h-2.5" />
-                              </button>
+                                {travelLeg?.mode === 'TRANSIT' && <Bus className="w-3.5 h-3.5" />}
+                                {travelLeg?.mode === 'DRIVE' && <Car className="w-3.5 h-3.5" />}
+                                {travelLeg?.mode === 'WALK' && <Footprints className="w-3.5 h-3.5" />}
+                                {travelLeg?.mode === 'BICYCLE' && <Bike className="w-3.5 h-3.5" />}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className={`font-bold text-xs truncate ${
+                                      isSelectedRoute
+                                        ? 'text-blue-950 dark:text-blue-100'
+                                        : 'text-purple-900 dark:text-purple-200'
+                                    }`}
+                                  >
+                                    {travelLeg?.transitDetails?.lineName || `${travelLeg?.mode || 'TRANSIT'} to Stop #${index + 2}`}
+                                  </span>
+                                  <span
+                                    className={`text-[11px] font-bold shrink-0 ${
+                                      isSelectedRoute
+                                        ? 'text-blue-700 dark:text-blue-300'
+                                        : 'text-purple-700 dark:text-purple-300'
+                                    }`}
+                                  >
+                                    • {travelLeg?.durationMinutes} mins ({travelLeg?.distanceText})
+                                  </span>
+                                </div>
+
+                                {/* Specific Bus Details if available */}
+                                {travelLeg?.transitDetails && (
+                                  <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                                    {travelLeg.transitDetails.departureStop} → {travelLeg.transitDetails.arrivalStop} ({travelLeg.transitDetails.numStops} stops)
+                                  </p>
+                                )}
+                              </div>
                             </div>
-                          ) : (
-                            <div className="flex items-center gap-1 text-[10px] font-bold text-purple-700 dark:text-purple-300 group-hover:underline">
-                              <span>Transit Route & Map</span>
-                              <ChevronRight className="w-3 h-3" />
+
+                            {/* Gap, Active Status, and Open Transit Route Modal Button */}
+                            <div className="flex items-center gap-2 shrink-0">
+                              {hasGapConflict ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-bold text-red-600 dark:text-red-400">
+                                    ⚠️ Only {gapMinutes}m buffer!
+                                  </span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAutoAlignNext(act, nextAct);
+                                    }}
+                                    className="flex items-center gap-1 px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded-md text-[10px] font-bold shadow-xs transition cursor-pointer"
+                                    title="Adjust next start time to allow travel"
+                                  >
+                                    <span>Adjust Gap</span>
+                                    <ChevronRight className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              ) : isSelectedRoute ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-600 text-white text-[10px] font-bold shadow-xs">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                    <span>Adjusted on Map</span>
+                                  </span>
+                                  {onOpenTransitModal && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onOpenTransitModal(act, nextAct, travelLeg!);
+                                      }}
+                                      className="text-[10px] font-bold text-blue-700 dark:text-blue-300 hover:underline px-1.5 py-0.5 rounded hover:bg-blue-200/50"
+                                      title="Open turn-by-turn directions modal"
+                                    >
+                                      Steps
+                                    </button>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1 text-[10px] font-bold text-purple-700 dark:text-purple-300 group-hover:underline">
+                                  <span>Transit Route & Map</span>
+                                  <ChevronRight className="w-3 h-3" />
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                      </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </React.Fragment>

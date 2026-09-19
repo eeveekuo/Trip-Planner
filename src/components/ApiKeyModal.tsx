@@ -99,6 +99,34 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             </p>
           </div>
 
+          {/* API Activation Guidance */}
+          <div className="p-3 bg-amber-50 dark:bg-amber-950/40 rounded-xl border border-amber-200 dark:border-amber-900/60 text-[11px] text-amber-900 dark:text-amber-200 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+              <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+              <span>Fix: &ldquo;API is not activated on your API project&rdquo;</span>
+            </div>
+            <p className="leading-relaxed">
+              If Google Maps displays an activation notice inside the embed or console, your Cloud project needs the <strong>Maps Embed API</strong> service enabled:
+            </p>
+            <ol className="list-decimal list-inside space-y-1 pl-1 text-amber-800 dark:text-amber-300">
+              <li>
+                Visit the{' '}
+                <a
+                  href="https://console.cloud.google.com/apis/library?filter=category:maps"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-bold underline hover:text-amber-950 dark:hover:text-white"
+                >
+                  Google Cloud Maps APIs Library
+                </a>
+              </li>
+              <li>Search for and click <strong>&ldquo;Maps Embed API&rdquo;</strong>, then click <strong>ENABLE</strong>.</li>
+              <li>
+                <em>Pro Tip:</em> You can also toggle <strong>&ldquo;Universal Embed&rdquo;</strong> in the map header, which displays live Google Maps routes and places without requiring any Cloud Console API activation!
+              </li>
+            </ol>
+          </div>
+
           {/* Compliance & Cost Notice */}
           <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 text-[11px] text-slate-500 dark:text-slate-400 space-y-1">
             <div className="flex items-center gap-1 font-semibold text-slate-700 dark:text-slate-300">

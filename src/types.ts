@@ -101,6 +101,17 @@ export interface Trip {
   updatedAt: string;
 }
 
+export interface GoogleMapsList {
+  id: string; // 'shelf' | day.id
+  title: string;
+  type: 'shelf' | 'day';
+  dayId?: string;
+  dayNumber?: number;
+  activityCount: number;
+  activities: Activity[];
+  googleMapsUrl: string;
+}
+
 export interface BusinessHoursValidation {
   isConflict: boolean;
   startsBeforeOpen: boolean;
@@ -110,4 +121,11 @@ export interface BusinessHoursValidation {
   overflowMinutes: number;
   suggestedStartTime?: string;
   suggestedDurationMinutes?: number;
+}
+
+export interface SelectedTransitRoute {
+  fromActivity: Activity;
+  toActivity: Activity;
+  leg: TravelLeg;
+  dayId?: string;
 }

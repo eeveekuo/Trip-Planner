@@ -14,13 +14,14 @@ import {
   Smartphone,
   Plus,
   ChevronDown,
-  FolderOpen
+  FolderOpen,
+  Layers
 } from 'lucide-react';
 
 interface NavbarProps {
   trip: Trip;
-  activeDayId: string;
-  onSelectDay: (dayId: string) => void;
+  activeListId: string;
+  onSelectList: (listId: string) => void;
   onAddDay: () => void;
   onOpenFinalizeModal: () => void;
   onOpenShareModal: () => void;
@@ -33,8 +34,8 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   trip,
-  activeDayId,
-  onSelectDay,
+  activeListId,
+  onSelectList,
   onAddDay,
   onOpenFinalizeModal,
   onOpenShareModal,
@@ -90,27 +91,56 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       </div>
 
-      {/* Day Selector Pills */}
+      {/* Lists Selector (Day 1 List, Day 2 List..., Activity Shelf List) */}
       <div className="hidden md:flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-2xl border border-slate-200 dark:border-slate-700">
         {trip.days.map((day) => {
-          const isActive = day.id === activeDayId;
+          const isActive = day.id === activeListId;
           return (
             <button
               key={day.id}
-              onClick={() => onSelectDay(day.id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer ${
+              onClick={() => onSelectList(day.id)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
                 isActive
                   ? 'bg-blue-600 text-white shadow-xs'
                   : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
               <span>Day {day.dayNumber}</span>
-              <span className={`ml-1 text-[10px] font-normal ${isActive ? 'text-blue-100' : 'text-slate-400'}`}>
-                ({day.activities.length})
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                  isActive
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                }`}
+              >
+                {day.activities.length}
               </span>
             </button>
           );
         })}
+
+        {/* Dedicated Activity Shelf List */}
+        <button
+          onClick={() => onSelectList('shelf')}
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+            activeListId === 'shelf'
+              ? 'bg-blue-600 text-white shadow-xs'
+              : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+          }`}
+          title="Activity Shelf List (Unscheduled places & ideas)"
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Shelf List</span>
+          <span
+            className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+              activeListId === 'shelf'
+                ? 'bg-blue-500 text-white'
+                : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            {trip.shelfActivities?.length || 0}
+          </span>
+        </button>
 
         <button
           onClick={onAddDay}
