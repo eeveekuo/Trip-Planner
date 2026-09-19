@@ -288,26 +288,20 @@ export function buildGoogleMapsEmbedLegDirectionsUrl(
   fromActivity: Activity,
   toActivity: Activity,
   mode: TransportationMode | string = 'TRANSIT',
-  apiKey: string = '',
-  useCloudKey: boolean = false
+  _apiKey: string = '',
+  _useCloudKey: boolean = false
 ): string {
   const originStr = encodeURIComponent(`${fromActivity.location.name}, ${fromActivity.location.address}`);
   const destStr = encodeURIComponent(`${toActivity.location.name}, ${toActivity.location.address}`);
   const m = mode.toUpperCase();
 
-  const cloudMode = m === 'DRIVE' ? 'driving' : m === 'WALK' ? 'walking' : m === 'BICYCLE' ? 'bicycling' : 'transit';
-
-  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
-    return `https://www.google.com/maps/embed/v1/directions?key=${apiKey}&origin=${originStr}&destination=${destStr}&mode=${cloudMode}`;
-  }
-
-  // Universal directions embed:
   // dirflg: 'r' for transit, 'd' for driving, 'w' for walking, 'b' for bicycling
   let dirflg = 'r';
   if (m === 'DRIVE') dirflg = 'd';
   else if (m === 'WALK') dirflg = 'w';
   else if (m === 'BICYCLE') dirflg = 'b';
 
+  // Reliable Universal Google Maps directions embed (never fails with "API is not activated on your project")
   return `https://maps.google.com/maps?saddr=${originStr}&daddr=${destStr}&dirflg=${dirflg}&output=embed`;
 }
 
@@ -317,79 +311,52 @@ export function buildGoogleMapsEmbedLegDirectionsUrl(
 export function buildGoogleMapsEmbedAreaOverviewUrl(
   activities: Activity[],
   destinationName: string = '',
-  apiKey: string = '',
-  useCloudKey: boolean = false
+  _apiKey: string = '',
+  _useCloudKey: boolean = false
 ): string {
   if (activities.length === 0) {
     const q = encodeURIComponent(destinationName || 'Tokyo, Japan');
-    return useCloudKey && apiKey && apiKey.trim().length > 5
-      ? `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`
-      : `https://maps.google.com/maps?q=${q}&output=embed`;
+    return `https://maps.google.com/maps?q=${q}&output=embed`;
   }
 
   if (activities.length === 1) {
     const act = activities[0];
     const q = encodeURIComponent(`${act.location.name}, ${act.location.address}`);
-    return useCloudKey && apiKey && apiKey.trim().length > 5
-      ? `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`
-      : `https://maps.google.com/maps?q=${q}&output=embed`;
+    return `https://maps.google.com/maps?q=${q}&output=embed`;
   }
 
   // Combine top places or create search query for the day's places
   const placeNames = activities.map((a) => a.location.name).slice(0, 4).join(' ');
   const query = `${placeNames} ${destinationName}`.trim();
   const q = encodeURIComponent(query);
-
-  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
-    return `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`;
-  }
   return `https://maps.google.com/maps?q=${q}&output=embed`;
 }
 
 /**
  * Builds a Google Maps Embed directions URL.
- * By default (useCloudKey = false), generates a Universal Google Maps Embed URL
- * which requires NO Google Cloud Console API activations and will never fail with "API is not activated".
- * If useCloudKey = true and a valid API key is present, uses the Google Cloud Embed API v1.
+ * Generates a Universal Google Maps Embed URL which requires NO Google Cloud Console API
+ * activations and will never fail with "API is not activated".
  */
 export function buildGoogleMapsEmbedDirectionsUrl(
   activities: Activity[],
-  apiKey: string = '',
-  mode: string = 'transit',
-  useCloudKey: boolean = false
+  _apiKey: string = '',
+  _mode: string = 'transit',
+  _useCloudKey: boolean = false
 ): string {
   if (activities.length === 0) {
-    return useCloudKey && apiKey && apiKey.trim().length > 5
-      ? `https://www.google.com/maps/embed/v1/view?key=${apiKey}&center=35.6762,139.6503&zoom=13`
-      : `https://maps.google.com/maps?q=Tokyo&output=embed`;
+    return `https://maps.google.com/maps?q=Tokyo&output=embed`;
   }
 
   if (activities.length === 1) {
     const act = activities[0];
     const q = encodeURIComponent(`${act.location.name}, ${act.location.address}`);
-    return useCloudKey && apiKey && apiKey.trim().length > 5
-      ? `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`
-      : `https://maps.google.com/maps?q=${q}&output=embed`;
+    return `https://maps.google.com/maps?q=${q}&output=embed`;
   }
 
   const origin = activities[0];
   const destination = activities[activities.length - 1];
-  const waypoints = activities.slice(1, -1);
-
   const originStr = encodeURIComponent(`${origin.location.name}, ${origin.location.address}`);
   const destStr = encodeURIComponent(`${destination.location.name}, ${destination.location.address}`);
-
-  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
-    let url = `https://www.google.com/maps/embed/v1/directions?key=${apiKey}&origin=${originStr}&destination=${destStr}&mode=${mode}`;
-    if (waypoints.length > 0) {
-      const waypointsStr = waypoints
-        .slice(0, 8)
-        .map((w) => encodeURIComponent(`${w.location.name}, ${w.location.address}`))
-        .join('|');
-      url += `&waypoints=${waypointsStr}`;
-    }
-    return url;
-  }
 
   // Universal Google Maps embed directions (100% active, no cloud API enablement required)
   return `https://maps.google.com/maps?saddr=${originStr}&daddr=${destStr}&output=embed`;
@@ -401,13 +368,10 @@ export function buildGoogleMapsEmbedDirectionsUrl(
 export function buildGoogleMapsEmbedPlaceUrl(
   name: string,
   address: string,
-  apiKey: string = '',
-  useCloudKey: boolean = false
+  _apiKey: string = '',
+  _useCloudKey: boolean = false
 ): string {
   const q = encodeURIComponent(`${name}, ${address}`);
-  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
-    return `https://www.google.com/maps/embed/v1/place?key=${apiKey}&q=${q}`;
-  }
   return `https://maps.google.com/maps?q=${q}&output=embed`;
 }
 
@@ -416,13 +380,10 @@ export function buildGoogleMapsEmbedPlaceUrl(
  */
 export function buildGoogleMapsEmbedSearchUrl(
   query: string, 
-  apiKey: string = '',
-  useCloudKey: boolean = false
+  _apiKey: string = '',
+  _useCloudKey: boolean = false
 ): string {
   const q = encodeURIComponent(query);
-  if (useCloudKey && apiKey && apiKey.trim().length > 5) {
-    return `https://www.google.com/maps/embed/v1/search?key=${apiKey}&q=${q}`;
-  }
   return `https://maps.google.com/maps?q=${q}&output=embed`;
 }
 

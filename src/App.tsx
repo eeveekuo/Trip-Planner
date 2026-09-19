@@ -677,7 +677,7 @@ export default function App() {
               onUpdateActivity={handleUpdateActivity}
               onDeleteActivity={handleDeleteActivity}
               onAddActivityClick={() => {
-                setActivityModalTargetList(activeDay.id);
+                setActivityModalTargetList('shelf');
                 setIsActivityModalOpen(true);
               }}
               onDropFromShelf={handleDropFromShelf}
@@ -716,8 +716,8 @@ export default function App() {
             onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
             onOpenTransitModal={handleOpenTransitModal}
             onMoveActivityToList={handleMoveActivityToList}
-            onOpenAddModal={(targetListId) => {
-              setActivityModalTargetList(targetListId || (activeListId === 'shelf' ? 'shelf' : activeDay.id));
+            onOpenAddModal={() => {
+              setActivityModalTargetList('shelf');
               setIsActivityModalOpen(true);
             }}
           />

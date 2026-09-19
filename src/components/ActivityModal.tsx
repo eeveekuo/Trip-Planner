@@ -347,8 +347,6 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
     e.preventDefault();
     if (!selectedPlace) return;
 
-    const isShelf = targetListId === 'shelf';
-
     const newActivity: Activity = {
       id: `act-${Date.now()}`,
       title: selectedPlace.name,
@@ -364,7 +362,7 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
         googleMapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedPlace.name + ' ' + selectedPlace.address)}`,
       },
       businessHours: selectedPlace.businessHours,
-      startTime: isShelf ? '' : startTime,
+      startTime: '',
       durationMinutes: 90,
       notes: notes.trim(),
       color: 
@@ -375,10 +373,10 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
         selectedPlace.category === 'entertainment' ? '#ec4899' : '#3b82f6',
     };
 
-    if (onAddToList) {
-      onAddToList(newActivity, targetListId, isShelf ? '' : startTime);
-    } else if (onAddToShelf) {
+    if (onAddToShelf) {
       onAddToShelf(newActivity);
+    } else if (onAddToList) {
+      onAddToList(newActivity, 'shelf', '');
     }
 
     onClose();
@@ -405,11 +403,11 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Add Place to Google Maps List
+                  Add Place to Activity Shelf
                 </h3>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Search locations via Google Maps and add directly to your Activity Shelf List or a Day List
+                Search Google Maps places and save directly to your Activity Shelf List
               </p>
             </div>
           </div>
@@ -504,39 +502,19 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
               )}
             </div>
 
-            {/* Target Google Maps List Selector */}
-            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 space-y-2.5">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                Target Google Maps List
-              </label>
-
-              <select
-                value={targetListId}
-                onChange={(e) => setTargetListId(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-              >
-                <option value="shelf">🗂️ Activity Shelf List (Unscheduled Places)</option>
-                {tripDays.map((day) => (
-                  <option key={day.id} value={day.id}>
-                    📍 Day {day.dayNumber} List ({day.title || `Day ${day.dayNumber}`})
-                  </option>
-                ))}
-              </select>
-
-              {/* Start Time if adding directly to a Day List */}
-              {targetListId !== 'shelf' && (
-                <div className="flex items-center gap-2 pt-1">
-                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 shrink-0">
-                    Schedule Time:
-                  </label>
-                  <input
-                    type="time"
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
-                    className="px-2 py-1 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
-                  />
-                </div>
-              )}
+            {/* Direct Activity Shelf target notice */}
+            <div className="p-3 rounded-2xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-2xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <Layers className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <h5 className="text-xs font-bold text-blue-950 dark:text-blue-200">
+                  Adds Directly to Activity Shelf List
+                </h5>
+                <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                  Unscheduled places bucket — easy to drag onto any day or view on the map.
+                </p>
+              </div>
             </div>
 
             {/* Selected Place Google Maps Metadata */}
@@ -595,9 +573,7 @@ export const ActivityModal: React.FC<ActivityModalProps> = ({
                   className="px-5 py-2.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md shadow-blue-500/20 transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>
-                    Add to {targetListId === 'shelf' ? 'Activity Shelf List' : 'Day List'}
-                  </span>
+                  <span>Add to Activity Shelf</span>
                 </button>
               </div>
             </form>
