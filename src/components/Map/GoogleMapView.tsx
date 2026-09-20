@@ -88,17 +88,20 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
   // Google Maps sidebar panel open/collapsed state (like Google Maps desktop list overview)
   const [isListPanelOpen, setIsListPanelOpen] = useState(true);
 
-  // When top level list selection changes, reset to overview mode
+  // When top level list selection changes, reset to overview mode and clear transit route if shelf
   useEffect(() => {
     setEmbedMode('overview');
-  }, [currentListId]);
+    if (currentListId === 'shelf' && onClearTransitRoute) {
+      onClearTransitRoute();
+    }
+  }, [currentListId, onClearTransitRoute]);
 
   // When selectedTransitRoute changes, automatically switch to directions mode
   useEffect(() => {
-    if (selectedTransitRoute) {
+    if (selectedTransitRoute && currentListId !== 'shelf') {
       setEmbedMode('directions');
     }
-  }, [selectedTransitRoute]);
+  }, [selectedTransitRoute, currentListId]);
 
   // Construct structured Google Maps Lists for all trip days + the shelf
   const googleMapsLists = useMemo<GoogleMapsList[]>(() => {
@@ -121,14 +124,16 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
       });
     });
 
-    // 2. Activity Shelf is an unscheduled Google Maps List
+    // 2. Activity Shelf is an unscheduled Google Maps List (no ordering need)
     lists.push({
       id: 'shelf',
       title: 'Activity Shelf List',
       type: 'shelf',
       activityCount: shelfActivities.length,
       activities: shelfActivities,
-      googleMapsUrl: buildGoogleMapsDirectionsUrl(shelfActivities),
+      googleMapsUrl: shelfActivities.length > 0
+        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${shelfActivities[0].location.name}, ${destinationName}`)}`
+        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destinationName)}`,
     });
 
     return lists;
@@ -151,8 +156,8 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
 
   // Calculate reliable Google Maps Universal Embed URL
   const embedUrl = useMemo(() => {
-    // 1. If a specific transit route is selected, adjust map directly to route & directions for that leg
-    if (selectedTransitRoute) {
+    // 1. If a specific transit route is selected on a scheduled day, adjust map directly to route & directions for that leg
+    if (selectedTransitRoute && currentList?.type !== 'shelf') {
       return buildGoogleMapsEmbedLegDirectionsUrl(
         selectedTransitRoute.fromActivity,
         selectedTransitRoute.toActivity,
@@ -168,8 +173,8 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
       );
     }
 
-    // 3. Directions mode for full day list
-    if (embedMode === 'directions' && currentList && currentList.activities.length > 0) {
+    // 3. Directions mode for full day list (shelf has no ordering need)
+    if (embedMode === 'directions' && currentList && currentList.type !== 'shelf' && currentList.activities.length > 0) {
       return buildGoogleMapsEmbedDirectionsUrl(currentList.activities);
     }
 
@@ -187,7 +192,7 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
 
   // Direct Google Maps Web URL to open the selected transit route, list, or place in a new tab
   const nativeGoogleMapsUrl = useMemo(() => {
-    if (selectedTransitRoute) {
+    if (selectedTransitRoute && currentList?.type !== 'shelf') {
       return buildGoogleMapsLegDirectionsWebUrl(
         selectedTransitRoute.fromActivity,
         selectedTransitRoute.toActivity,
@@ -235,16 +240,16 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-900/60 shadow-xs transition cursor-pointer"
-            title={selectedTransitRoute ? "Open turn-by-turn directions in Google Maps" : "Open selected list in Google Maps to save to your personal lists"}
+            title={selectedTransitRoute && currentList?.type !== 'shelf' ? "Open turn-by-turn directions in Google Maps" : "Open selected list in Google Maps to save to your personal lists"}
           >
-            <span>{selectedTransitRoute ? 'Open in Google Maps' : 'Save / Open in Maps'}</span>
+            <span>{selectedTransitRoute && currentList?.type !== 'shelf' ? 'Open in Google Maps' : 'Save / Open in Maps'}</span>
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
         </div>
       </div>
 
-      {/* 2. Active Transit Route Banner (when user clicked a transit route) */}
-      {selectedTransitRoute && (
+      {/* 2. Active Transit Route Banner (when user clicked a transit route on a scheduled day) */}
+      {selectedTransitRoute && currentList?.type !== 'shelf' && (
         <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-md z-15 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shrink-0">
@@ -384,14 +389,27 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
 
               {/* Action Buttons Toolbar (Google Maps list style pill buttons) */}
               <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  onClick={() => setEmbedMode('directions')}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition cursor-pointer"
-                  title="Show full day directions on map"
-                >
-                  <Navigation className="w-3.5 h-3.5" />
-                  <span>Directions</span>
-                </button>
+                {currentList.type !== 'shelf' ? (
+                  <button
+                    onClick={() => setEmbedMode('directions')}
+                    className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+                    title="Show full day directions on map"
+                  >
+                    <Navigation className="w-3.5 h-3.5" />
+                    <span>Directions</span>
+                  </button>
+                ) : (
+                  onOpenAddModal && (
+                    <button
+                      onClick={() => onOpenAddModal('shelf')}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs transition cursor-pointer"
+                      title="Add place to Activity Shelf"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Place</span>
+                    </button>
+                  )
+                )}
 
                 <a
                   href={currentList.googleMapsUrl}
@@ -460,13 +478,17 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
                         }`}
                       >
                         <div className="flex items-start gap-2.5">
-                          {/* Sequential Badge (1, 2, 3...) */}
+                          {/* Sequential Badge (1, 2, 3... for Days, Pin icon for unscheduled Shelf) */}
                           <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
                             isSelected
                               ? 'bg-blue-600 text-white shadow-xs'
                               : 'bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900'
                           }`}>
-                            {currentList.type === 'shelf' ? `S${idx + 1}` : idx + 1}
+                            {currentList.type === 'shelf' ? (
+                              <MapPin className="w-3.5 h-3.5" />
+                            ) : (
+                              idx + 1
+                            )}
                           </div>
 
                           {/* Place Main Details */}
@@ -498,11 +520,17 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
 
                             {/* Schedule & Business Hours */}
                             <div className="flex items-center gap-2 mt-1 text-[10px]">
-                              {act.startTime && (
-                                <span className="font-bold text-blue-700 dark:text-blue-300 bg-blue-100/70 dark:bg-blue-900/40 px-1.5 py-0.5 rounded-md flex items-center gap-1">
-                                  <Clock className="w-2.5 h-2.5" />
-                                  {formatTime12h(act.startTime)}
+                              {currentList.type === 'shelf' ? (
+                                <span className="font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-md">
+                                  Unscheduled
                                 </span>
+                              ) : (
+                                act.startTime && (
+                                  <span className="font-bold text-blue-700 dark:text-blue-300 bg-blue-100/70 dark:bg-blue-900/40 px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                    <Clock className="w-2.5 h-2.5" />
+                                    {formatTime12h(act.startTime)}
+                                  </span>
+                                )
                               )}
                               <span className="text-emerald-700 dark:text-emerald-400 font-medium">
                                 ● Open
@@ -545,8 +573,8 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
                         </div>
                       </div>
 
-                      {/* Google Maps Transit Connector between Stop N and Stop N+1 */}
-                      {nextAct && act.travelToNext && (
+                      {/* Google Maps Transit Connector between Stop N and Stop N+1 (Day lists only - shelf has no ordering need) */}
+                      {currentList.type !== 'shelf' && nextAct && act.travelToNext && (
                         <div className="my-1.5 ml-5 pl-4 border-l-2 border-dashed border-slate-300 dark:border-slate-700 py-1">
                           <button
                             onClick={() => {
@@ -639,17 +667,19 @@ export const GoogleMapView: React.FC<GoogleMapViewProps> = ({
           >
             Area Overview
           </button>
-          <button
-            onClick={() => setEmbedMode('directions')}
-            className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
-              embedMode === 'directions' || selectedTransitRoute
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
-            }`}
-            title="Show Route & Directions connecting places"
-          >
-            Route & Directions
-          </button>
+          {currentList?.type !== 'shelf' && (
+            <button
+              onClick={() => setEmbedMode('directions')}
+              className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
+                embedMode === 'directions' || selectedTransitRoute
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900'
+              }`}
+              title="Show Route & Directions connecting places"
+            >
+              Route & Directions
+            </button>
+          )}
           <button
             onClick={() => setEmbedMode('place')}
             className={`px-2.5 py-1 rounded-lg transition cursor-pointer ${
