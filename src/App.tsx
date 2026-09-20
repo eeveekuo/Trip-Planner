@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Activity, Companion, TransportationMode, TravelLeg, Trip, TripDay, SelectedTransitRoute } from './types';
 import { INITIAL_TRIPS } from './data/defaultTrips';
 import { 
@@ -21,7 +21,7 @@ import { ApiKeyModal } from './components/ApiKeyModal';
 import { TripSelectorModal } from './components/TripSelectorModal';
 import { TransitDetailsModal } from './components/TransitDetailsModal';
 import { ShelfListView } from './components/Shelf/ShelfListView';
-import { Map, Calendar, Plus, Layers } from 'lucide-react';
+import { Map, Calendar, Plus, Layers, GripVertical } from 'lucide-react';
 
 const SESSION_ID = `sess-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -87,6 +87,123 @@ export default function App() {
   const handleSaveApiKey = (key: string) => {
     setApiKey(key);
     localStorage.setItem('trip_planner_gmap_key', key);
+  };
+
+  // Slideable split-view state (percentage width of schedule column on desktop)
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [scheduleWidthPercent, setScheduleWidthPercent] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('trip_planner_schedule_width');
+      if (saved) {
+        const val = parseFloat(saved);
+        if (!isNaN(val) && val >= 20 && val <= 75) {
+          return val;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 42; // default: 42% schedule / 58% map
+  });
+  const [isDraggingDivider, setIsDraggingDivider] = useState(false);
+
+  // Desktop media query check for responsive layout
+  const [isDesktop, setIsDesktop] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768;
+    }
+    return true;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(min-width: 768px)');
+    const updateMatches = (e: MediaQueryListEvent | MediaQueryList) => {
+      setIsDesktop(e.matches);
+    };
+    updateMatches(mediaQuery);
+
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener('change', updateMatches);
+      return () => mediaQuery.removeEventListener('change', updateMatches);
+    } else {
+      mediaQuery.addListener(updateMatches);
+      return () => mediaQuery.removeListener(updateMatches);
+    }
+  }, []);
+
+  // Window drag event listeners for the divider
+  useEffect(() => {
+    if (!isDraggingDivider) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const totalWidth = rect.width;
+      if (totalWidth <= 0) return;
+
+      const offsetX = e.clientX - rect.left;
+      const rawPercent = (offsetX / totalWidth) * 100;
+
+      // Keep within bounds: min 280px left, min 340px right, and between 20% and 75%
+      const minPercent = Math.max(20, (280 / totalWidth) * 100);
+      const maxPercent = Math.min(75, ((totalWidth - 340) / totalWidth) * 100);
+      const clamped = Math.min(Math.max(rawPercent, minPercent), maxPercent);
+
+      setScheduleWidthPercent(clamped);
+    };
+
+    const handlePointerUp = () => {
+      setIsDraggingDivider(false);
+      setScheduleWidthPercent((prev) => {
+        try {
+          localStorage.setItem('trip_planner_schedule_width', String(Math.round(prev)));
+        } catch {
+          // ignore
+        }
+        return prev;
+      });
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [isDraggingDivider]);
+
+  const handleResetDivider = () => {
+    setScheduleWidthPercent(42);
+    try {
+      localStorage.setItem('trip_planner_schedule_width', '42');
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDividerKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      setScheduleWidthPercent((prev) => {
+        const next = Math.max(20, prev - 2);
+        try { localStorage.setItem('trip_planner_schedule_width', String(Math.round(next))); } catch {}
+        return next;
+      });
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      setScheduleWidthPercent((prev) => {
+        const next = Math.min(75, prev + 2);
+        try { localStorage.setItem('trip_planner_schedule_width', String(Math.round(next))); } catch {}
+        return next;
+      });
+    } else if (e.key === 'Enter' || e.key === ' ' || e.key === 'Home') {
+      e.preventDefault();
+      handleResetDivider();
+    }
   };
 
   // Synchronize trip changes to localStorage and backend API for real-time companion sharing
@@ -643,12 +760,20 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content Area: Split-view on desktop, tabs on mobile */}
-      <div className="flex-1 relative overflow-hidden flex flex-col md:grid md:grid-cols-12">
+      {/* Main Content Area: Slideable split-view on desktop, tabs on mobile */}
+      <div 
+        ref={containerRef}
+        className={`flex-1 relative overflow-hidden flex flex-col md:flex-row ${
+          isDraggingDivider ? 'select-none cursor-col-resize' : ''
+        }`}
+      >
         {/* Left Column: Day Timeline List or Dedicated Activity Shelf List */}
         <div
-          className={`h-full md:col-span-6 lg:col-span-5 flex flex-col overflow-hidden ${
-            mobileTab === 'timeline' ? 'flex' : 'hidden md:flex'
+          style={{
+            width: isDesktop ? `${scheduleWidthPercent}%` : undefined,
+          }}
+          className={`h-full md:shrink-0 flex flex-col overflow-hidden ${
+            mobileTab === 'timeline' ? 'flex w-full' : 'hidden md:flex'
           }`}
         >
           {activeListId === 'shelf' ? (
@@ -688,12 +813,60 @@ export default function App() {
           )}
         </div>
 
-        {/* Right Column: Google Maps View with Native Lists & Embed API */}
+        {/* Slideable Vertical Divider between Schedule and Map (Desktop) */}
         <div
-          className={`h-full md:col-span-6 lg:col-span-7 flex flex-col overflow-hidden ${
-            mobileTab === 'map' ? 'flex' : 'hidden md:flex'
+          role="separator"
+          tabIndex={0}
+          aria-orientation="vertical"
+          aria-valuenow={Math.round(scheduleWidthPercent)}
+          aria-valuemin={20}
+          aria-valuemax={75}
+          aria-label="Resize schedule and map columns"
+          title="Drag to resize schedule and map (double-click to reset)"
+          onPointerDown={(e) => {
+            e.preventDefault();
+            setIsDraggingDivider(true);
+          }}
+          onDoubleClick={handleResetDivider}
+          onKeyDown={handleDividerKeyDown}
+          className={`hidden md:flex relative items-center justify-center w-2 -mx-1 z-30 cursor-col-resize group select-none transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+            isDraggingDivider
+              ? 'bg-blue-500/20 dark:bg-blue-600/30'
+              : 'hover:bg-slate-300/50 dark:hover:bg-slate-700/50'
           }`}
         >
+          {/* Vertical divider line */}
+          <div
+            className={`w-0.5 h-full transition-colors ${
+              isDraggingDivider
+                ? 'bg-blue-600 dark:bg-blue-500'
+                : 'bg-slate-200 dark:bg-slate-800 group-hover:bg-blue-400 dark:group-hover:bg-blue-500'
+            }`}
+          />
+
+          {/* Centered grip pill handle */}
+          <div
+            className={`absolute top-1/2 -translate-y-1/2 w-4 h-9 rounded-full flex items-center justify-center border shadow-xs transition-all ${
+              isDraggingDivider
+                ? 'bg-blue-600 text-white border-blue-700 scale-110 shadow-md'
+                : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-500 group-hover:border-blue-400 group-hover:text-blue-600 group-hover:scale-105'
+            }`}
+          >
+            <GripVertical className="w-3 h-3 stroke-[2.5]" />
+          </div>
+        </div>
+
+        {/* Right Column: Google Maps View with Native Lists & Embed API */}
+        <div
+          className={`h-full flex-1 flex flex-col overflow-hidden min-w-0 relative ${
+            mobileTab === 'map' ? 'flex w-full' : 'hidden md:flex'
+          }`}
+        >
+          {/* Transparent dragging overlay prevents iframe from intercepting mouse events */}
+          {isDraggingDivider && (
+            <div className="absolute inset-0 z-50 cursor-col-resize pointer-events-auto bg-transparent" />
+          )}
+
           <GoogleMapView
             apiKey={apiKey}
             activities={activeDay.activities}
